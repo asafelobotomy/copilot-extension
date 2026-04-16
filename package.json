@@ -31,7 +31,11 @@
     "onLanguageModelTool:asafelobotomy_get_installed_extensions",
     "onLanguageModelTool:asafelobotomy_sync_extensions_with_recommendations",
     "onLanguageModelTool:asafelobotomy_get_mcp_status",
-    "onLanguageModelTool:asafelobotomy_restart_mcp_server"
+    "onLanguageModelTool:asafelobotomy_get_mcp_server_config",
+    "onLanguageModelTool:asafelobotomy_toggle_mcp_server",
+    "onLanguageModelTool:asafelobotomy_restart_mcp_server",
+    "onLanguageModelTool:asafelobotomy_add_mcp_server",
+    "onLanguageModelTool:asafelobotomy_remove_mcp_server"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -142,13 +146,55 @@
         "name": "asafelobotomy_get_mcp_status",
         "toolReferenceName": "get_mcp_status",
         "displayName": "Get MCP Server Status",
-        "userDescription": "Check the health status of configured MCP servers.",
-        "modelDescription": "Reads .vscode/mcp.json and reports each configured MCP server with its type (stdio/sse), command, and whether the extension's MCP provider is active. Use this to diagnose MCP server issues.",
+        "userDescription": "Check the status of all configured MCP servers.",
+        "modelDescription": "Reads .vscode/mcp.json and reports each configured MCP server with its type (stdio/http), command or URL, args, env keys, enabled/disabled state, and sandbox config. Returns counts of enabled vs disabled servers. Use this for a quick overview of all MCP servers.",
         "canBeReferencedInPrompt": true,
         "icon": "$(server-process)",
         "inputSchema": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "asafelobotomy_get_mcp_server_config",
+        "toolReferenceName": "get_mcp_server_config",
+        "displayName": "Get MCP Server Config",
+        "userDescription": "Get the full configuration of a specific MCP server.",
+        "modelDescription": "Returns the complete configuration for a named MCP server from .vscode/mcp.json, including type, command, args, env, sandbox settings, and disabled state. Use when you need the full details of one server.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(settings-gear)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serverName": {
+              "type": "string",
+              "description": "The name of the MCP server as defined in .vscode/mcp.json (e.g. 'filesystem', 'git', 'heartbeat')."
+            }
+          },
+          "required": ["serverName"]
+        }
+      },
+      {
+        "name": "asafelobotomy_toggle_mcp_server",
+        "toolReferenceName": "toggle_mcp_server",
+        "displayName": "Toggle MCP Server",
+        "userDescription": "Enable or disable an MCP server in .vscode/mcp.json.",
+        "modelDescription": "Sets or removes the 'disabled' flag on a named MCP server in .vscode/mcp.json. Use enabled=true to enable (removes disabled flag) or enabled=false to disable (sets disabled=true). The server will need to be restarted for changes to take effect.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(toggle-off)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serverName": {
+              "type": "string",
+              "description": "The name of the MCP server to toggle."
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "true to enable the server, false to disable it."
+            }
+          },
+          "required": ["serverName", "enabled"]
         }
       },
       {
@@ -162,6 +208,66 @@
         "inputSchema": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "asafelobotomy_add_mcp_server",
+        "toolReferenceName": "add_mcp_server",
+        "displayName": "Add MCP Server",
+        "userDescription": "Add a new MCP server to .vscode/mcp.json.",
+        "modelDescription": "Adds a new MCP server entry to .vscode/mcp.json. For stdio servers, provide command and args. For http servers, provide url. Fails if a server with that name already exists. The file is written with tab indentation to match VS Code defaults.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(add)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serverName": {
+              "type": "string",
+              "description": "Unique name for the new MCP server."
+            },
+            "type": {
+              "type": "string",
+              "enum": ["stdio", "http"],
+              "description": "Server transport type: 'stdio' for local process, 'http' for remote HTTP/SSE endpoint."
+            },
+            "command": {
+              "type": "string",
+              "description": "For stdio servers: the command to run (e.g. 'npx', 'uvx', 'node')."
+            },
+            "args": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "For stdio servers: command arguments."
+            },
+            "url": {
+              "type": "string",
+              "description": "For http servers: the MCP endpoint URL."
+            },
+            "env": {
+              "type": "object",
+              "description": "Optional environment variables as key-value pairs."
+            }
+          },
+          "required": ["serverName", "type"]
+        }
+      },
+      {
+        "name": "asafelobotomy_remove_mcp_server",
+        "toolReferenceName": "remove_mcp_server",
+        "displayName": "Remove MCP Server",
+        "userDescription": "Remove an MCP server from .vscode/mcp.json.",
+        "modelDescription": "Removes a named server entry from .vscode/mcp.json. This is destructive and cannot be undone. Use toggle_mcp_server to disable a server without removing it.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serverName": {
+              "type": "string",
+              "description": "The name of the MCP server to remove."
+            }
+          },
+          "required": ["serverName"]
         }
       }
     ]
