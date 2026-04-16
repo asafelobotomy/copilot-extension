@@ -23,11 +23,17 @@
     "agent",
     "extensions"
   ],
-  "activationEvents": [],
-  "main": "./dist/extension.js",
-  "enabledApiProposals": [
-    "mcpServerDefinitionProvider"
+  "activationEvents": [
+    "onLanguageModelTool:asafelobotomy_get_active_profile",
+    "onLanguageModelTool:asafelobotomy_list_profiles",
+    "onLanguageModelTool:asafelobotomy_get_workspace_profile_association",
+    "onLanguageModelTool:asafelobotomy_ensure_repo_profile",
+    "onLanguageModelTool:asafelobotomy_get_installed_extensions",
+    "onLanguageModelTool:asafelobotomy_sync_extensions_with_recommendations",
+    "onLanguageModelTool:asafelobotomy_get_mcp_status",
+    "onLanguageModelTool:asafelobotomy_restart_mcp_server"
   ],
+  "main": "./dist/extension.js",
   "contributes": {
     "configuration": {
       "title": "aSafeLobotomy's Copilot Extension",
@@ -36,6 +42,12 @@
           "type": "string",
           "default": "",
           "description": "Name of the active VS Code profile for this workspace. Set per-profile to enable profile detection by Copilot agents."
+        },
+        "asafelobotomy.knownProfiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "List of known VS Code profile names. Populated automatically when ensure_repo_profile is called."
         }
       }
     },
