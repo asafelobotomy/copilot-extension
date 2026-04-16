@@ -4,6 +4,7 @@
   "description": "Companion extension for copilot-instructions-template — profile management, extension sync, and MCP lifecycle tools for GitHub Copilot agents.",
   "version": "0.1.0",
   "publisher": "asafelobotomy",
+  "icon": "copilot-extension-logo.png",
   "license": "MIT",
   "repository": {
     "type": "git",
