@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { registerProfileTools } from "./tools/profile";
 import { registerExtensionTools } from "./tools/extensions";
 import { registerMcpTools } from "./tools/mcp";
+import { registerWorkspaceTools } from "./tools/workspace";
+import { registerHeartbeatTools } from "./tools/heartbeat";
 import { McpProvider } from "./mcp/provider";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -13,6 +15,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // Phase 1 — Profile & Extension LM Tools (stable API)
   registerProfileTools(context);
   registerExtensionTools(context);
+
+  // Phase 1b — Workspace & Heartbeat LM Tools (stable API)
+  registerWorkspaceTools(context);
+  registerHeartbeatTools(context);
 
   // Phase 2 — MCP lifecycle (proposed API)
   const mcpProvider = new McpProvider(context, output);

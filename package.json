@@ -35,7 +35,11 @@
     "onLanguageModelTool:asafelobotomy_toggle_mcp_server",
     "onLanguageModelTool:asafelobotomy_restart_mcp_server",
     "onLanguageModelTool:asafelobotomy_add_mcp_server",
-    "onLanguageModelTool:asafelobotomy_remove_mcp_server"
+    "onLanguageModelTool:asafelobotomy_remove_mcp_server",
+    "onLanguageModelTool:asafelobotomy_get_workspace_info",
+    "onLanguageModelTool:asafelobotomy_get_workspace_state",
+    "onLanguageModelTool:asafelobotomy_session_reflect",
+    "onLanguageModelTool:asafelobotomy_spatial_status"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -268,6 +272,58 @@
             }
           },
           "required": ["serverName"]
+        }
+      },
+      {
+        "name": "asafelobotomy_get_workspace_info",
+        "toolReferenceName": "get_workspace_info",
+        "displayName": "Get Workspace Info",
+        "userDescription": "Detect OS, project manifest, git state, and runtime versions for the current workspace.",
+        "modelDescription": "Returns environment info (OS, distro, arch, package manager), project metadata (name, version, language from package.json/pyproject.toml/Cargo.toml/go.mod), git state (branch, commit), runtime versions (node, python), and VS Code context (version, appHost). Use at session start or when you need environment context.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(info)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "asafelobotomy_get_workspace_state",
+        "toolReferenceName": "get_workspace_state",
+        "displayName": "Get Workspace State",
+        "userDescription": "Read the current session state, recent heartbeat events, and HEARTBEAT.md summary.",
+        "modelDescription": "Reads .copilot/workspace/runtime/state.json (session state), .heartbeat-events.jsonl (last 20 events), session sentinel status, and HEARTBEAT.md first line. Returns the full state object, recent events array, session active flag, heartbeat summary, and file paths. Use to check session health or debug heartbeat issues.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(pulse)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "asafelobotomy_session_reflect",
+        "toolReferenceName": "session_reflect",
+        "displayName": "Session Reflect",
+        "userDescription": "Reflect on the current coding session with metrics and personalised prompts.",
+        "modelDescription": "Returns session magnitude (small/medium/large), metrics (active minutes, files changed, edits, compactions, duration), reflection prompts (scope check, compaction, test coverage, SOUL values, USER attributes), workspace identity file existence, and a heartbeat record template. Call on significant sessions (≥8 files or ≥30min active). Process silently — update identity files if warranted, surface only actionable findings.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(mirror)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "asafelobotomy_spatial_status",
+        "toolReferenceName": "spatial_status",
+        "displayName": "Spatial Status",
+        "userDescription": "Get a compact workspace navigation snapshot with vocabulary, diaries, and session clock.",
+        "modelDescription": "Returns the workspace vocabulary table from ledger.md, recent diary entries per agent (last 3 bullets each), and a session clock summary (active duration, median session length). Use when you need a quick overview of the workspace state for navigation or context.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(compass)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
         }
       }
     ]
