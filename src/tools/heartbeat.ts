@@ -39,6 +39,98 @@ function getWorkspacePaths(root: string) {
 	};
 }
 
+function isoUtc(epochSeconds: number): string {
+	return new Date(epochSeconds * 1000)
+		.toISOString()
+		.replace(/\.\d+Z$/, "Z");
+}
+
+function ensureParentDir(filePath: string): void {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function writeJsonFile(filePath: string, payload: unknown): void {
+	ensureParentDir(filePath);
+	fs.writeFileSync(
+		filePath,
+		`${JSON.stringify(payload, null, 2)}\n`,
+		"utf-8"
+	);
+}
+
+function persistReflectionCompletion(
+	paths: ReturnType<typeof getWorkspacePaths>,
+	state: Record<string, unknown>,
+	now: number
+): {
+	updatedState: Record<string, unknown>;
+	markers: {
+		state: boolean;
+		sentinel: boolean;
+		event: boolean;
+	};
+	errors: string[];
+} {
+	const sessionId = String(state.session_id ?? "unknown");
+	const updatedState: Record<string, unknown> = {
+		...state,
+		retrospective_state: "complete",
+		session_state: "complete",
+		last_write_epoch: now,
+	};
+	const markers = {
+		state: false,
+		sentinel: false,
+		event: false,
+	};
+	const errors: string[] = [];
+
+	try {
+		writeJsonFile(paths.state, updatedState);
+		markers.state = true;
+	} catch (error) {
+		errors.push(
+			`state: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
+
+	try {
+		ensureParentDir(paths.sentinel);
+		fs.writeFileSync(
+			paths.sentinel,
+			`${sessionId}|${isoUtc(now)}|complete\n`,
+			"utf-8"
+		);
+		markers.sentinel = true;
+	} catch (error) {
+		errors.push(
+			`sentinel: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
+
+	try {
+		ensureParentDir(paths.events);
+		fs.appendFileSync(
+			paths.events,
+			`${JSON.stringify({
+				detail: "complete",
+				session_id: sessionId,
+				trigger: "session_reflect",
+				ts: now,
+				ts_utc: isoUtc(now),
+			})}\n`,
+			"utf-8"
+		);
+		markers.event = true;
+	} catch (error) {
+		errors.push(
+			`event: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
+
+	return { updatedState, markers, errors };
+}
+
 function loadState(statePath: string): Record<string, unknown> {
 	return readJsonFile(statePath) ?? {};
 }
@@ -311,6 +403,7 @@ class SessionReflectTool
 		const today = new Date().toISOString().split("T")[0];
 		const sessionId = String(state.session_id ?? "unknown");
 		const shortId = sessionId.slice(0, 16);
+		const completion = persistReflectionCompletion(paths, state, now);
 
 		return jsonResult({
 			magnitude,
@@ -333,6 +426,11 @@ class SessionReflectTool
 				instruction:
 					"Append to ## History (keep last 5); set Result (PASS/WARN/FAIL) and Actions taken.",
 				row_template: `| ${today} | ${shortId} | session_reflect | PASS | <actions taken> |`,
+			},
+			completion: {
+				recorded: completion.errors.length === 0,
+				markers: completion.markers,
+				errors: completion.errors,
 			},
 		});
 	}

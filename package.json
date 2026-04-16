@@ -2,7 +2,7 @@
   "name": "copilot-extension",
   "displayName": "aSafeLobotomy's Copilot Extension",
   "description": "Companion extension for copilot-instructions-template — profile management, extension sync, and MCP lifecycle tools for GitHub Copilot agents.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "asafelobotomy",
   "icon": "copilot-extension-logo.png",
   "license": "MIT",
@@ -306,7 +306,7 @@
         "toolReferenceName": "session_reflect",
         "displayName": "Session Reflect",
         "userDescription": "Reflect on the current coding session with metrics and personalised prompts.",
-        "modelDescription": "Returns session magnitude (small/medium/large), metrics (active minutes, files changed, edits, compactions, duration), reflection prompts (scope check, compaction, test coverage, SOUL values, USER attributes), workspace identity file existence, and a heartbeat record template. Call on significant sessions (≥8 files or ≥30min active). Process silently — update identity files if warranted, surface only actionable findings.",
+        "modelDescription": "Returns session magnitude (small/medium/large), metrics (active minutes, files changed, edits, compactions, duration), reflection prompts (scope check, compaction, test coverage, SOUL values, USER attributes), workspace identity file existence, and a heartbeat record template. On success, it also writes the retrospective completion markers used by the heartbeat stop-hook runtime (state, sentinel, and completion event). Call on significant sessions (≥8 files or ≥30min active). Process silently — update identity files if warranted, surface only actionable findings.",
         "canBeReferencedInPrompt": true,
         "icon": "$(mirror)",
         "inputSchema": {

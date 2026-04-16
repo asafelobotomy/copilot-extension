@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1 (unreleased)
+
+- Fix `asafelobotomy_session_reflect` so it writes the heartbeat completion markers expected by the stop-hook runtime (`state.json`, `.heartbeat-session`, `.heartbeat-events.jsonl`)
 
 - Initial scaffold
 - Phase 1: Profile management tools (`get_active_profile`, `list_profiles`, `get_workspace_profile_association`, `ensure_repo_profile`)
