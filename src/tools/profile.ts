@@ -1,4 +1,107 @@
 import * as vscode from "vscode";
+import { spawn, spawnSync } from "child_process";
+
+const SAFE_PROFILE_NAME_RE = /^[\w\s\-.]+$/;
+
+interface EnsureRepoProfileResult {
+  profileName: string;
+  switched: boolean;
+  cli?: string;
+  target?: string;
+  note?: string;
+  error?: string;
+}
+
+function resolveCodeCli(): string | null {
+  const preferred = vscode.env.appName.toLowerCase().includes("insider")
+    ? ["code-insiders", "code"]
+    : ["code", "code-insiders"];
+
+  for (const candidate of preferred) {
+    const result = spawnSync(candidate, ["--version"], {
+      stdio: "ignore",
+    });
+    if (!result.error && result.status === 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+export async function ensureRepoProfile(
+  profileName: string
+): Promise<EnsureRepoProfileResult> {
+  if (!SAFE_PROFILE_NAME_RE.test(profileName)) {
+    return {
+      profileName,
+      switched: false,
+      error:
+        "Invalid profile name. Only letters, numbers, spaces, hyphens, underscores, and dots are allowed.",
+    };
+  }
+
+  const target =
+    vscode.workspace.workspaceFile?.fsPath ??
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!target) {
+    return {
+      profileName,
+      switched: false,
+      error: "No workspace folder or workspace file open.",
+    };
+  }
+
+  const config = vscode.workspace.getConfiguration("asafelobotomy");
+  await config.update(
+    "profileName",
+    profileName,
+    vscode.ConfigurationTarget.Workspace
+  );
+
+  const known = config.get<string[]>("knownProfiles", []);
+  if (!known.includes(profileName)) {
+    await config.update(
+      "knownProfiles",
+      [...known, profileName],
+      vscode.ConfigurationTarget.Global
+    );
+  }
+
+  const cli = resolveCodeCli();
+  if (!cli) {
+    return {
+      profileName,
+      switched: false,
+      error:
+        "Could not find a VS Code CLI. Install either 'code' or 'code-insiders' in PATH.",
+    };
+  }
+
+  try {
+    const child = spawn(cli, [target, "--profile", profileName], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch (error) {
+    return {
+      profileName,
+      switched: false,
+      cli,
+      target,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
+    profileName,
+    switched: true,
+    cli,
+    target,
+    note: "VS Code will open the current workspace in the requested profile.",
+  };
+}
 
 class GetActiveProfileTool
   implements vscode.LanguageModelTool<Record<string, never>>
@@ -98,37 +201,21 @@ class EnsureRepoProfileTool
     }>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const { profileName } = options.input;
-
-    // Store the profile name in workspace settings
-    const config = vscode.workspace.getConfiguration("asafelobotomy");
-    await config.update("profileName", profileName, vscode.ConfigurationTarget.Workspace);
-
-    // Track in known profiles (user-level)
-    const known = config.get<string[]>("knownProfiles", []);
-    if (!known.includes(profileName)) {
-      await config.update(
-        "knownProfiles",
-        [...known, profileName],
-        vscode.ConfigurationTarget.Global
-      );
-    }
-
-    // Open workspace in the named profile via CLI
-    const terminal = vscode.window.createTerminal({
-      name: "Profile Switch",
-      hideFromUser: true,
-    });
-    terminal.sendText(`code . --profile "${profileName}"`);
-    terminal.dispose();
+    const result = await ensureRepoProfile(options.input.profileName);
 
     return new vscode.LanguageModelToolResult([
       new vscode.LanguageModelTextPart(
-        JSON.stringify({
-          action: "profile_switch",
-          profileName,
-          note: "VS Code window will reload in the new profile.",
-        })
+        JSON.stringify(
+          result.error
+            ? { error: result.error, profileName: result.profileName }
+            : {
+                action: "profile_switch",
+                profileName: result.profileName,
+                cli: result.cli,
+                target: result.target,
+                note: result.note,
+              }
+        )
       ),
     ]);
   }

@@ -89,7 +89,9 @@ export class McpProvider {
     }
   }
 
-  private async provideMcpServerDefinitions(): Promise<unknown[]> {
+  private async provideMcpServerDefinitions(
+    _token: vscode.CancellationToken
+  ): Promise<unknown[]> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders?.length) {
       return [];
@@ -105,24 +107,33 @@ export class McpProvider {
       const raw = fs.readFileSync(mcpJsonPath, "utf-8");
       const parsed = JSON.parse(raw);
       const servers = parsed.servers ?? {};
+      const cwdUri = workspaceFolders[0].uri;
+      const definitions: unknown[] = [];
 
-      return Object.entries(servers)
-        .filter(
-          ([, config]: [string, unknown]) =>
-            (config as Record<string, unknown>).type === "stdio"
-        )
-        .map(([name, config]: [string, unknown]) => {
-          const c = config as Record<string, unknown>;
-          return {
-            name: `asafelobotomy-${name}`,
-            label: name,
-            version: "1",
-            command: c.command as string,
-            args: (c.args as string[]) ?? [],
-            env: (c.env as Record<string, string>) ?? {},
-            cwd: workspaceFolders[0].uri.fsPath,
-          };
-        });
+      for (const [name, config] of Object.entries(servers)) {
+        const c = config as Record<string, unknown>;
+        const label = name;
+
+        if (c.type === "stdio" || (!c.type && c.command)) {
+          const def = new vscode.McpStdioServerDefinition(
+            label,
+            c.command as string,
+            (c.args as string[] | undefined) ?? [],
+            (c.env as Record<string, string | null> | undefined) ?? {}
+          );
+          def.cwd = cwdUri;
+          definitions.push(def);
+        } else if (c.type === "http" && c.url) {
+          const def = new vscode.McpHttpServerDefinition(
+            label,
+            vscode.Uri.parse(c.url as string),
+            (c.headers as Record<string, string> | undefined) ?? {}
+          );
+          definitions.push(def);
+        }
+      }
+
+      return definitions;
     } catch {
       this.output.appendLine("Could not read mcp.json for provider.");
       return [];
@@ -130,8 +141,8 @@ export class McpProvider {
   }
 
   private async resolveMcpServerDefinition(
-    server: unknown
-  ): Promise<unknown | undefined> {
+    server: vscode.McpServerDefinition
+  ): Promise<vscode.McpServerDefinition | undefined> {
     // Pass through — no additional resolution needed
     return server;
   }

@@ -71,24 +71,30 @@ class GetWorkspaceInfoTool
 			} catch {
 				// /etc/os-release not available
 			}
-			// Package manager detection
-			for (const [cmd, name] of [
-				["apt", "apt"],
-				["pacman", "pacman"],
-				["dnf", "dnf"],
-				["rpm-ostree", "rpm-ostree"],
-				["zypper", "zypper"],
-				["nix", "nix"],
-				["apk", "apk"],
-			] as const) {
-				if (tryExec(`command -v ${cmd}`)) {
+			// Package manager detection — use fs.existsSync to avoid spawning
+			// a subprocess for each candidate (avoids up to ~35s worst-case timeout)
+			const pmCandidates: [string, string][] = [
+				["/usr/bin/apt", "apt"],
+				["/usr/bin/pacman", "pacman"],
+				["/usr/bin/dnf", "dnf"],
+				["/usr/bin/rpm-ostree", "rpm-ostree"],
+				["/usr/sbin/zypper", "zypper"],
+				["/usr/bin/nix", "nix"],
+				["/sbin/apk", "apk"],
+			];
+			for (const [binPath, name] of pmCandidates) {
+				if (fs.existsSync(binPath)) {
 					packageManager = name;
 					break;
 				}
 			}
 		} else if (platform === "darwin") {
 			osDisplay = `macOS ${release} (${arch})`;
-			packageManager = tryExec("command -v brew") ? "brew" : null;
+			packageManager =
+				fs.existsSync("/opt/homebrew/bin/brew") ||
+				fs.existsSync("/usr/local/bin/brew")
+					? "brew"
+					: null;
 		} else if (platform === "win32") {
 			osDisplay = `Windows (${arch})`;
 			packageManager = tryExec("where winget") ? "winget" : null;
@@ -264,6 +270,49 @@ class GetWorkspaceStateTool
 	}
 }
 
+// ── GetWorkspaceIndexTool ────────────────────────────────────────────
+// Reads .copilot/workspace/operations/workspace-index.json
+class GetWorkspaceIndexTool
+	implements vscode.LanguageModelTool<Record<string, never>>
+{
+	async prepareInvocation() {
+		return { invocationMessage: "Reading workspace index…" };
+	}
+
+	async invoke(): Promise<vscode.LanguageModelToolResult> {
+		const root = getWorkspaceRoot();
+		if (!root) {
+			return jsonResult({ error: "No workspace folder open." });
+		}
+
+		const indexPath = path.join(
+			root,
+			".copilot",
+			"workspace",
+			"operations",
+			"workspace-index.json"
+		);
+
+		if (!fs.existsSync(indexPath)) {
+			return jsonResult({
+				error: "workspace-index.json not found.",
+				expectedPath: indexPath,
+				hint: "Run the workspace indexing hook or create .copilot/workspace/operations/workspace-index.json manually.",
+			});
+		}
+
+		const index = readJsonFile(indexPath);
+		if (index === null) {
+			return jsonResult({
+				error: "Could not parse workspace-index.json.",
+				path: indexPath,
+			});
+		}
+
+		return jsonResult(index);
+	}
+}
+
 export function registerWorkspaceTools(
 	context: vscode.ExtensionContext
 ): void {
@@ -275,6 +324,10 @@ export function registerWorkspaceTools(
 		vscode.lm.registerTool(
 			"asafelobotomy_get_workspace_state",
 			new GetWorkspaceStateTool()
+		),
+		vscode.lm.registerTool(
+			"asafelobotomy_get_workspace_index",
+			new GetWorkspaceIndexTool()
 		)
 	);
 }

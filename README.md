@@ -2,7 +2,7 @@
 
 Companion VS Code extension for [copilot-instructions-template](https://github.com/asafelobotomy/copilot-instructions-template).
 
-Provides Language Model Tools for GitHub Copilot agents: profile management, extension sync, and MCP server lifecycle.
+Provides Language Model Tools and a Control Center for GitHub Copilot agents: template lifecycle status, profile management, extension sync, workspace state, and MCP server lifecycle.
 
 ## Install
 
@@ -19,6 +19,15 @@ Or install from within VS Code: Extensions view > `...` menu > "Install from VSI
 - VS Code 1.101.0+ (Insiders recommended for proposed API support)
 - GitHub Copilot extension
 - `--enable-proposed-api=asafelobotomy.copilot-extension` launch flag (for MCP features)
+
+## Control Center
+
+The Activity Bar Control Center now focuses on the template's core workflow first:
+
+- Detects whether the workspace looks like the template source repo, a consumer repo, or an unmanaged workspace
+- Parses `.github/copilot-version.md` to show installed template version, ownership mode, fingerprints, and setup-answer coverage
+- Launches Copilot Chat with the template's canonical lifecycle triggers for setup, update, restore, and factory restore
+- Continues to surface extension recommendations, workspace index health, heartbeat state, and MCP status
 
 ## Language Model Tools
 

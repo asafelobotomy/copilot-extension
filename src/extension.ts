@@ -5,12 +5,18 @@ import { registerMcpTools } from "./tools/mcp";
 import { registerWorkspaceTools } from "./tools/workspace";
 import { registerHeartbeatTools } from "./tools/heartbeat";
 import { McpProvider } from "./mcp/provider";
+import { registerControlCenter } from "./controlCenter";
+import { registerMcpTreeView } from "./mcpTreeView";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel(
     "aSafeLobotomy's Copilot Extension"
   );
-  output.appendLine("Activating aSafeLobotomy's Copilot Extension v0.1.0");
+  context.subscriptions.push(output);
+  const extensionVersion = context.extension.packageJSON.version ?? "unknown";
+  output.appendLine(
+    `Activating aSafeLobotomy's Copilot Extension v${extensionVersion}`
+  );
 
   // Phase 1 — Profile & Extension LM Tools (stable API)
   registerProfileTools(context);
@@ -24,8 +30,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const mcpProvider = new McpProvider(context, output);
   registerMcpTools(context, mcpProvider);
   mcpProvider.register();
+  registerControlCenter(context, output, mcpProvider);
+  registerMcpTreeView(context, output, mcpProvider);
 
-  output.appendLine("All tools registered.");
+  output.appendLine("All tools and UI registered.");
 }
 
 export function deactivate(): void {

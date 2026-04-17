@@ -19,11 +19,11 @@ interface McpJsonFile {
   servers?: Record<string, McpServerConfig>;
 }
 
-function readMcpJson(): {
+async function readMcpJson(): Promise<{
   path: string;
   data: McpJsonFile | null;
   error?: string;
-} {
+}> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders?.length) {
     return { path: "", data: null, error: "No workspace folder open." };
@@ -34,7 +34,7 @@ function readMcpJson(): {
     "mcp.json"
   );
   try {
-    const raw = fs.readFileSync(mcpJsonPath, "utf-8");
+    const raw = await fs.promises.readFile(mcpJsonPath, "utf-8");
     return { path: mcpJsonPath, data: JSON.parse(raw) };
   } catch {
     return {
@@ -45,8 +45,8 @@ function readMcpJson(): {
   }
 }
 
-function writeMcpJson(mcpJsonPath: string, data: McpJsonFile): void {
-  fs.writeFileSync(mcpJsonPath, JSON.stringify(data, null, "\t") + "\n");
+async function writeMcpJson(mcpJsonPath: string, data: McpJsonFile): Promise<void> {
+  await fs.promises.writeFile(mcpJsonPath, JSON.stringify(data, null, "\t") + "\n");
 }
 
 function jsonResult(obj: unknown): vscode.LanguageModelToolResult {
@@ -66,7 +66,7 @@ class GetMcpStatusTool
   }
 
   async invoke(): Promise<vscode.LanguageModelToolResult> {
-    const { data, error } = readMcpJson();
+    const { data, error } = await readMcpJson();
     if (!data) {
       return jsonResult({ error });
     }
@@ -114,7 +114,7 @@ class GetMcpServerConfigTool
       serverName: string;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { data, error } = readMcpJson();
+    const { data, error } = await readMcpJson();
     if (!data) {
       return jsonResult({ error });
     }
@@ -164,7 +164,7 @@ class ToggleMcpServerTool
       enabled: boolean;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = readMcpJson();
+    const { path: mcpPath, data, error } = await readMcpJson();
     if (!data) {
       return jsonResult({ error });
     }
@@ -184,7 +184,7 @@ class ToggleMcpServerTool
       (config as Record<string, unknown>).disabled = true;
     }
 
-    writeMcpJson(mcpPath, data);
+    await writeMcpJson(mcpPath, data);
 
     return jsonResult({
       action: options.input.enabled ? "enabled" : "disabled",
@@ -260,7 +260,7 @@ class AddMcpServerTool
       env?: Record<string, string>;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = readMcpJson();
+    const { path: mcpPath, data, error } = await readMcpJson();
     if (!data) {
       return jsonResult({ error });
     }
@@ -289,7 +289,7 @@ class AddMcpServerTool
     }
 
     data.servers[options.input.serverName] = entry as McpServerConfig;
-    writeMcpJson(mcpPath, data);
+    await writeMcpJson(mcpPath, data);
 
     return jsonResult({
       action: "server_added",
@@ -324,7 +324,7 @@ class RemoveMcpServerTool
       serverName: string;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = readMcpJson();
+    const { path: mcpPath, data, error } = await readMcpJson();
     if (!data) {
       return jsonResult({ error });
     }
@@ -338,7 +338,7 @@ class RemoveMcpServerTool
     }
 
     delete servers[options.input.serverName];
-    writeMcpJson(mcpPath, data);
+    await writeMcpJson(mcpPath, data);
 
     return jsonResult({
       action: "server_removed",
