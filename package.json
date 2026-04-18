@@ -270,7 +270,7 @@
           {
             "id": "setupProject",
             "title": "Set Up Instructions",
-            "description": "Open Copilot Chat with the canonical setup trigger so the template's Setup agent can personalize this workspace.\n[Set Up Instructions](command:asafelobotomy.controlCenter.setupProject)",
+            "description": "Send the canonical setup trigger in Copilot Chat so the template's Setup agent can personalize this workspace with its configured model automatically.\n[Set Up Instructions](command:asafelobotomy.controlCenter.setupProject)",
             "media": {
               "image": "media/control-center.svg",
               "altText": "Starting template setup"

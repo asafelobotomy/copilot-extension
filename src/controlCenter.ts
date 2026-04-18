@@ -123,6 +123,10 @@ interface ActionButtonSpec {
   reason?: string;
 }
 
+const TEMPLATE_SETUP_TRIGGER =
+  "Setup from asafelobotomy/copilot-instructions-template";
+const TEMPLATE_SETUP_MODE = "Setup";
+
 function getWorkspaceRoot(): string | null {
   return displayUriPath(getPrimaryWorkspaceUri());
 }
@@ -417,24 +421,40 @@ function getUtilityActionsDescription(): string {
   return "General Control Center actions for refreshing status, rerunning health checks, and opening extension logs.";
 }
 
-function getActionButtons(snapshot: ControlCenterSnapshot): ActionButtonSpec[] {
+function getSetupActionDisabledReason(
+  snapshot: ControlCenterSnapshot
+): string | undefined {
   const noWorkspaceReason = "Open a workspace folder to use this action.";
 
-  const setupReason = !snapshot.workspace.root
+  return !snapshot.workspace.root
     ? noWorkspaceReason
     : snapshot.template.repoMode === "template-repo"
       ? "Run setup from a consumer workspace, not the template source repo."
       : snapshot.template.repoMode === "consumer-repo"
         ? "This workspace already looks template-managed; use update or restore instead."
         : undefined;
+}
 
-  const consumerLifecycleReason = !snapshot.workspace.root
+function getConsumerLifecycleActionDisabledReason(
+  snapshot: ControlCenterSnapshot
+): string | undefined {
+  const noWorkspaceReason = "Open a workspace folder to use this action.";
+
+  return !snapshot.workspace.root
     ? noWorkspaceReason
     : snapshot.template.repoMode === "generic-workspace"
       ? "Install template-managed instructions before using this action."
       : snapshot.template.repoMode === "template-repo"
         ? "Run this action from a consumer workspace rather than the template source repo."
         : undefined;
+}
+
+function getActionButtons(snapshot: ControlCenterSnapshot): ActionButtonSpec[] {
+  const noWorkspaceReason = "Open a workspace folder to use this action.";
+
+  const setupReason = getSetupActionDisabledReason(snapshot);
+  const consumerLifecycleReason =
+    getConsumerLifecycleActionDisabledReason(snapshot);
 
   const restartMcpReason = !snapshot.workspace.root
     ? noWorkspaceReason
@@ -653,18 +673,61 @@ class ControlCenterService {
   }
 
   async startTemplateSetup(): Promise<void> {
-    await this.openTemplateLifecycleChat("Set up instructions");
+    const snapshot = await this.getSnapshot();
+    if (
+      !(await this.ensureTemplateLifecycleActionAllowed(
+        "Set Up Instructions",
+        getSetupActionDisabledReason(snapshot)
+      ))
+    ) {
+      return;
+    }
+
+    await this.openTemplateLifecycleChat(TEMPLATE_SETUP_TRIGGER, {
+      mode: TEMPLATE_SETUP_MODE,
+      send: true,
+    });
   }
 
   async updateTemplateInstructions(): Promise<void> {
+    const snapshot = await this.getSnapshot();
+    if (
+      !(await this.ensureTemplateLifecycleActionAllowed(
+        "Update Instructions",
+        getConsumerLifecycleActionDisabledReason(snapshot)
+      ))
+    ) {
+      return;
+    }
+
     await this.openTemplateLifecycleChat("Update your instructions");
   }
 
   async restoreTemplateInstructions(): Promise<void> {
+    const snapshot = await this.getSnapshot();
+    if (
+      !(await this.ensureTemplateLifecycleActionAllowed(
+        "Restore Instructions From Backup",
+        getConsumerLifecycleActionDisabledReason(snapshot)
+      ))
+    ) {
+      return;
+    }
+
     await this.openTemplateLifecycleChat("Restore instructions from backup");
   }
 
   async factoryRestoreTemplateInstructions(): Promise<void> {
+    const snapshot = await this.getSnapshot();
+    if (
+      !(await this.ensureTemplateLifecycleActionAllowed(
+        "Factory Restore Instructions",
+        getConsumerLifecycleActionDisabledReason(snapshot)
+      ))
+    ) {
+      return;
+    }
+
     await this.openTemplateLifecycleChat("Factory restore instructions");
   }
 
@@ -1064,15 +1127,35 @@ class ControlCenterService {
     return true;
   }
 
-  private async openTemplateLifecycleChat(query: string): Promise<void> {
+  private async ensureTemplateLifecycleActionAllowed(
+    actionLabel: string,
+    blockedReason: string | undefined
+  ): Promise<boolean> {
+    if (!blockedReason) {
+      return true;
+    }
+
+    this.output.appendLine(
+      `[Control Center] ${actionLabel} blocked: ${blockedReason}`
+    );
+    void vscode.window.showWarningMessage(
+      `${actionLabel} is unavailable here. ${blockedReason}`
+    );
+    return false;
+  }
+
+  private async openTemplateLifecycleChat(
+    query: string,
+    options?: { mode?: string; send?: boolean }
+  ): Promise<void> {
     try {
       await vscode.commands.executeCommand("workbench.action.chat.open", {
-        mode: "agent",
+        mode: options?.mode ?? "agent",
         query,
-        isPartialQuery: true,
+        isPartialQuery: options?.send ? false : true,
       });
       this.output.appendLine(
-        `[Control Center] Opened Copilot Chat with lifecycle trigger: ${query}`
+        `[Control Center] ${options?.send ? "Submitted" : "Opened"} Copilot Chat lifecycle trigger: ${query}`
       );
     } catch (error) {
       this.reportError(`Failed to open Copilot Chat for '${query}'`, error);
