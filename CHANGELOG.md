@@ -6,6 +6,9 @@
 - Align the Control Center with `copilot-instructions-template` by detecting repo mode, parsing `.github/copilot-version.md`, and launching canonical setup, update, restore, and factory-restore chat flows
 - Add extension install/uninstall tools and a workspace index tool so Copilot agents can manage extensions and inspect `workspace-index.json`
 - Fix Control Center loading so the webview resolves immediately and falls back gracefully if a snapshot section stalls
+- Switch profile management from extension-owned settings to real VS Code user-profile discovery, add `get_profile_details`, and surface real profile associations in the Control Center
+- Remove the legacy `asafelobotomy.profileName` and `asafelobotomy.knownProfiles` compatibility settings in favor of direct VS Code user-data profile associations
+- Fix MCP TypeScript issues in the tree view and MCP tools so the full `tsc --noEmit` gate passes again
 
 - Fix `asafelobotomy_session_reflect` so it writes the heartbeat completion markers expected by the stop-hook runtime (`state.json`, `.heartbeat-session`, `.heartbeat-events.jsonl`)
 

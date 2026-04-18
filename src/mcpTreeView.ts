@@ -1,7 +1,15 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as path from "path";
 import { McpProvider } from "./mcp/provider";
+import {
+  dirnameUri,
+  displayUriPath,
+  getPrimaryWorkspaceUri,
+  joinWorkspaceUri,
+  pathExists,
+  readJsonFile,
+  writeTextFile,
+} from "./workspaceFs";
 
 const MCP_TREE_VIEW_ID = "asafelobotomy.mcpServers";
 
@@ -30,6 +38,7 @@ interface McpJsonFile {
 }
 
 interface McpReadResult {
+  fileUri: vscode.Uri | null;
   filePath: string | null;
   data: McpJsonFile | null;
   error?: string;
@@ -73,7 +82,7 @@ class McpServerItem extends vscode.TreeItem {
 }
 
 function getWorkspaceRoot(): string | null {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+  return displayUriPath(getPrimaryWorkspaceUri());
 }
 
 function getTransport(config: McpServerConfig): string {
@@ -96,6 +105,7 @@ function buildValidationReport(data: McpJsonFile): McpValidationReport {
   const errors: string[] = [];
   const warnings: string[] = [];
   const entries = Object.entries(data.servers ?? {});
+  const userHomeToken = "${userHome}";
 
   if (!entries.length) {
     warnings.push("No MCP servers are configured under servers.");
@@ -123,7 +133,7 @@ function buildValidationReport(data: McpJsonFile): McpValidationReport {
     if (commandName === "npx") {
       if (!containsPathFragment(allowWrite, ".npm")) {
         warnings.push(
-          `${serverName}: npx server sandbox should allow writes to \\${userHome}/.npm.${overrideSuffix}`
+          `${serverName}: npx server sandbox should allow writes to ${userHomeToken}/.npm.${overrideSuffix}`
         );
       }
       if (!containsDomain(allowedDomains, "registry.npmjs.org")) {
@@ -136,12 +146,12 @@ function buildValidationReport(data: McpJsonFile): McpValidationReport {
     if (commandName === "uvx") {
       if (!containsPathFragment(allowWrite, ".cache/uv")) {
         warnings.push(
-          `${serverName}: uvx server sandbox should allow writes to \\${userHome}/.cache/uv.${overrideSuffix}`
+          `${serverName}: uvx server sandbox should allow writes to ${userHomeToken}/.cache/uv.${overrideSuffix}`
         );
       }
       if (!containsPathFragment(allowWrite, ".local/share/uv")) {
         warnings.push(
-          `${serverName}: uvx server sandbox should allow writes to \\${userHome}/.local/share/uv.${overrideSuffix}`
+          `${serverName}: uvx server sandbox should allow writes to ${userHomeToken}/.local/share/uv.${overrideSuffix}`
         );
       }
       if (!containsDomain(allowedDomains, "pypi.org")) {
@@ -161,47 +171,41 @@ function buildValidationReport(data: McpJsonFile): McpValidationReport {
 }
 
 async function readMcpJson(): Promise<McpReadResult> {
-  const workspaceRoot = getWorkspaceRoot();
-  if (!workspaceRoot) {
+  const mcpJsonUri = joinWorkspaceUri(".vscode", "mcp.json");
+  if (!mcpJsonUri) {
     return {
+      fileUri: null,
       filePath: null,
       data: null,
       error: "No workspace folder open.",
     };
   }
 
-  const filePath = path.join(workspaceRoot, ".vscode", "mcp.json");
-  try {
-    const raw = await fs.promises.readFile(filePath, "utf-8");
-    try {
-      return { filePath, data: JSON.parse(raw) as McpJsonFile };
-    } catch {
-      return {
-        filePath,
-        data: null,
-        error: "Could not parse .vscode/mcp.json",
-      };
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return {
-        filePath,
-        data: null,
-        missing: true,
-      };
-    }
+  const filePath = displayUriPath(mcpJsonUri);
+  const data = await readJsonFile<McpJsonFile>(mcpJsonUri);
+  if (data) {
+    return { fileUri: mcpJsonUri, filePath, data };
+  }
 
+  if (await pathExists(mcpJsonUri)) {
     return {
+      fileUri: mcpJsonUri,
       filePath,
       data: null,
-      error: "Could not read .vscode/mcp.json",
+      error: "Could not parse .vscode/mcp.json",
     };
   }
+
+  return {
+    fileUri: mcpJsonUri,
+    filePath,
+    data: null,
+    missing: true,
+  };
 }
 
-async function writeMcpJson(filePath: string, data: McpJsonFile): Promise<void> {
-  await fs.promises.writeFile(filePath, JSON.stringify(data, null, "\t") + "\n");
+async function writeMcpJson(fileUri: vscode.Uri, data: McpJsonFile): Promise<void> {
+  await writeTextFile(fileUri, JSON.stringify(data, null, "\t") + "\n");
 }
 
 async function openOrCreateMcpConfig(
@@ -215,8 +219,12 @@ async function openOrCreateMcpConfig(
     return;
   }
 
-  const filePath = path.join(workspaceRoot, ".vscode", "mcp.json");
-  if (!fs.existsSync(filePath)) {
+  const filePath = joinWorkspaceUri(".vscode", "mcp.json");
+  if (!filePath) {
+    return;
+  }
+
+  if (!(await pathExists(filePath))) {
     const createChoice = await vscode.window.showInformationMessage(
       "No .vscode/mcp.json exists for this workspace. Create one now?",
       "Create Config",
@@ -227,12 +235,12 @@ async function openOrCreateMcpConfig(
       return;
     }
 
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await writeMcpJson(filePath, { servers: {} });
+    await vscode.workspace.fs.createDirectory(dirnameUri(filePath));
+    await writeTextFile(filePath, JSON.stringify({ servers: {} }, null, "\t") + "\n");
     output.appendLine("[MCP Tree] Created .vscode/mcp.json.");
   }
 
-  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+  const document = await vscode.workspace.openTextDocument(filePath);
   await vscode.window.showTextDocument(document, { preview: false });
 }
 
@@ -348,8 +356,8 @@ class McpServersProvider implements vscode.TreeDataProvider<McpServerItem> {
     item: McpServerItem,
     enabled: boolean
   ): Promise<void> {
-    const { filePath, data, error } = await readMcpJson();
-    if (!filePath || !data) {
+    const { fileUri, data, error } = await readMcpJson();
+    if (!fileUri || !data) {
       void vscode.window.showErrorMessage(error ?? "Could not read MCP config.");
       return;
     }
@@ -367,7 +375,7 @@ class McpServersProvider implements vscode.TreeDataProvider<McpServerItem> {
       data.servers[item.serverName].disabled = true;
     }
 
-    await writeMcpJson(filePath, data);
+    await writeMcpJson(fileUri, data);
     this.output.appendLine(
       `[MCP Tree] ${enabled ? "Enabled" : "Disabled"} ${item.serverName}.`
     );

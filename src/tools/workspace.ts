@@ -3,6 +3,14 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { execSync } from "child_process";
+import {
+	displayUriPath,
+	getPrimaryWorkspaceUri,
+	joinFromUri,
+	pathExists,
+	readJsonFile as readWorkspaceJsonFile,
+	readTextFile as readWorkspaceTextFile,
+} from "../workspaceFs";
 
 function jsonResult(obj: unknown): vscode.LanguageModelToolResult {
 	return new vscode.LanguageModelToolResult([
@@ -24,16 +32,7 @@ function tryExec(cmd: string, cwd?: string): string {
 }
 
 function getWorkspaceRoot(): string | null {
-	const folders = vscode.workspace.workspaceFolders;
-	return folders?.length ? folders[0].uri.fsPath : null;
-}
-
-function readJsonFile(filePath: string): unknown | null {
-	try {
-		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-	} catch {
-		return null;
-	}
+	return displayUriPath(getPrimaryWorkspaceUri());
 }
 
 // ── GetWorkspaceInfoTool ────────────────────────────────────────────
@@ -46,7 +45,9 @@ class GetWorkspaceInfoTool
 	}
 
 	async invoke(): Promise<vscode.LanguageModelToolResult> {
-		const root = getWorkspaceRoot();
+		const rootUri = getPrimaryWorkspaceUri();
+		const root = displayUriPath(rootUri);
+		const localRoot = rootUri?.scheme === "file" ? rootUri.fsPath : null;
 
 		// OS & environment — native Node.js APIs, no shell probing
 		const platform = os.platform();
@@ -103,44 +104,46 @@ class GetWorkspaceInfoTool
 		// Git context
 		let branch: string | null = null;
 		let commit: string | null = null;
-		if (root) {
-			branch = tryExec("git rev-parse --abbrev-ref HEAD", root) || null;
-			commit = tryExec("git rev-parse --short HEAD", root) || null;
+		if (localRoot) {
+			branch = tryExec("git rev-parse --abbrev-ref HEAD", localRoot) || null;
+			commit = tryExec("git rev-parse --short HEAD", localRoot) || null;
 		}
 
 		// Project manifest detection
 		let projectName: string | null = null;
 		let projectVersion: string | null = null;
 		let detectedLanguage: string | null = null;
-		if (root) {
-			const packageJson = path.join(root, "package.json");
-			const pyprojectToml = path.join(root, "pyproject.toml");
-			const cargoToml = path.join(root, "Cargo.toml");
-			const goMod = path.join(root, "go.mod");
+		if (rootUri) {
+			const packageJsonUri = joinFromUri(rootUri, "package.json");
+			const pyprojectTomlUri = joinFromUri(rootUri, "pyproject.toml");
+			const cargoTomlUri = joinFromUri(rootUri, "Cargo.toml");
+			const goModUri = joinFromUri(rootUri, "go.mod");
 
-			if (fs.existsSync(packageJson)) {
-				const pkg = readJsonFile(packageJson) as Record<string, string> | null;
+			if (await pathExists(packageJsonUri)) {
+				const pkg = await readWorkspaceJsonFile<Record<string, string>>(
+					packageJsonUri
+				);
 				projectName = pkg?.name ?? null;
 				projectVersion = pkg?.version ?? null;
 				detectedLanguage = "javascript/typescript";
-			} else if (fs.existsSync(pyprojectToml)) {
-				const content = fs.readFileSync(pyprojectToml, "utf-8");
-				projectName = content.match(/^name\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+			} else if (await pathExists(pyprojectTomlUri)) {
+				const content = await readWorkspaceTextFile(pyprojectTomlUri);
+				projectName = content?.match(/^name\s*=\s*"([^"]+)"/m)?.[1] ?? null;
 				projectVersion =
-					content.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+					content?.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
 				detectedLanguage = "python";
-			} else if (fs.existsSync(cargoToml)) {
-				const content = fs.readFileSync(cargoToml, "utf-8");
-				projectName = content.match(/^name\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+			} else if (await pathExists(cargoTomlUri)) {
+				const content = await readWorkspaceTextFile(cargoTomlUri);
+				projectName = content?.match(/^name\s*=\s*"([^"]+)"/m)?.[1] ?? null;
 				projectVersion =
-					content.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+					content?.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
 				detectedLanguage = "rust";
-			} else if (fs.existsSync(goMod)) {
-				const content = fs.readFileSync(goMod, "utf-8");
-				projectName = content.match(/^module\s+(\S+)/m)?.[1] ?? null;
+			} else if (await pathExists(goModUri)) {
+				const content = await readWorkspaceTextFile(goModUri);
+				projectName = content?.match(/^module\s+(\S+)/m)?.[1] ?? null;
 				detectedLanguage = "go";
 			} else {
-				projectName = path.basename(root);
+				projectName = path.posix.basename(rootUri.path) || null;
 			}
 		}
 
@@ -195,36 +198,37 @@ class GetWorkspaceStateTool
 	}
 
 	async invoke(): Promise<vscode.LanguageModelToolResult> {
-		const root = getWorkspaceRoot();
-		if (!root) {
+		const rootUri = getPrimaryWorkspaceUri();
+		if (!rootUri) {
 			return jsonResult({ error: "No workspace folder open." });
 		}
 
-		const workspaceDir = path.join(root, ".copilot", "workspace");
-		const statePath = path.join(workspaceDir, "runtime", "state.json");
-		const eventsPath = path.join(
+		const workspaceDir = joinFromUri(rootUri, ".copilot", "workspace");
+		const stateUri = joinFromUri(workspaceDir, "runtime", "state.json");
+		const eventsUri = joinFromUri(
 			workspaceDir,
 			"runtime",
 			".heartbeat-events.jsonl"
 		);
-		const sentinelPath = path.join(
+		const sentinelUri = joinFromUri(
 			workspaceDir,
 			"runtime",
 			".heartbeat-session"
 		);
-		const heartbeatPath = path.join(
+		const heartbeatUri = joinFromUri(
 			workspaceDir,
 			"operations",
 			"HEARTBEAT.md"
 		);
 
 		// Read state.json
-		const state = (readJsonFile(statePath) as Record<string, unknown>) ?? {};
+		const state =
+			(await readWorkspaceJsonFile<Record<string, unknown>>(stateUri)) ?? {};
 
 		// Read recent events (last 20 lines of JSONL)
 		let recentEvents: unknown[] = [];
-		try {
-			const eventsRaw = fs.readFileSync(eventsPath, "utf-8");
+		const eventsRaw = await readWorkspaceTextFile(eventsUri);
+		if (eventsRaw) {
 			const lines = eventsRaw.split("\n").filter((l) => l.trim());
 			recentEvents = lines.slice(-20).map((l) => {
 				try {
@@ -233,27 +237,17 @@ class GetWorkspaceStateTool
 					return null;
 				}
 			}).filter(Boolean);
-		} catch {
-			// Events file doesn't exist yet
 		}
 
 		// Session active check
-		let sessionActive = false;
-		try {
-			sessionActive = fs.existsSync(sentinelPath);
-		} catch {
-			// ignore
-		}
+		const sessionActive = await pathExists(sentinelUri);
 
 		// HEARTBEAT.md first line
-		let heartbeatSummary: string | null = null;
-		try {
-			const hb = fs.readFileSync(heartbeatPath, "utf-8");
-			const firstLine = hb.split("\n").find((l) => l.includes("HEARTBEAT"));
-			heartbeatSummary = firstLine?.trim() ?? null;
-		} catch {
-			// HEARTBEAT.md doesn't exist
-		}
+		const heartbeatText = await readWorkspaceTextFile(heartbeatUri);
+		const heartbeatSummary = heartbeatText
+			?.split("\n")
+			.find((l) => l.includes("HEARTBEAT"))
+			?.trim() ?? null;
 
 		return jsonResult({
 			state,
@@ -261,10 +255,10 @@ class GetWorkspaceStateTool
 			sessionActive,
 			heartbeatSummary,
 			paths: {
-				state: statePath,
-				events: eventsPath,
-				sentinel: sentinelPath,
-				heartbeat: heartbeatPath,
+				state: displayUriPath(stateUri),
+				events: displayUriPath(eventsUri),
+				sentinel: displayUriPath(sentinelUri),
+				heartbeat: displayUriPath(heartbeatUri),
 			},
 		});
 	}
@@ -280,32 +274,32 @@ class GetWorkspaceIndexTool
 	}
 
 	async invoke(): Promise<vscode.LanguageModelToolResult> {
-		const root = getWorkspaceRoot();
-		if (!root) {
+		const rootUri = getPrimaryWorkspaceUri();
+		if (!rootUri) {
 			return jsonResult({ error: "No workspace folder open." });
 		}
 
-		const indexPath = path.join(
-			root,
+		const indexUri = joinFromUri(
+			rootUri,
 			".copilot",
 			"workspace",
 			"operations",
 			"workspace-index.json"
 		);
 
-		if (!fs.existsSync(indexPath)) {
+		if (!(await pathExists(indexUri))) {
 			return jsonResult({
 				error: "workspace-index.json not found.",
-				expectedPath: indexPath,
+				expectedPath: displayUriPath(indexUri),
 				hint: "Run the workspace indexing hook or create .copilot/workspace/operations/workspace-index.json manually.",
 			});
 		}
 
-		const index = readJsonFile(indexPath);
+		const index = await readWorkspaceJsonFile<unknown>(indexUri);
 		if (index === null) {
 			return jsonResult({
 				error: "Could not parse workspace-index.json.",
-				path: indexPath,
+				path: displayUriPath(indexUri),
 			});
 		}
 

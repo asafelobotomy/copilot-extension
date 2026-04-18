@@ -10,10 +10,16 @@
     "type": "git",
     "url": "https://github.com/asafelobotomy/copilot-extension"
   },
+  "bugs": {
+    "url": "https://github.com/asafelobotomy/copilot-extension/issues"
+  },
+  "homepage": "https://github.com/asafelobotomy/copilot-extension#readme",
   "engines": {
     "vscode": "^1.101.0"
   },
-  "enabledApiProposals": ["mcpServerDefinitionProvider"],
+  "enabledApiProposals": [
+    "mcpServerDefinitionProvider"
+  ],
   "categories": [
     "AI",
     "Other"
@@ -26,11 +32,10 @@
     "extensions"
   ],
   "activationEvents": [
-    "onView:asafelobotomy.controlCenter",
-    "onView:asafelobotomy.mcpServers",
     "onLanguageModelTool:asafelobotomy_get_active_profile",
     "onLanguageModelTool:asafelobotomy_list_profiles",
     "onLanguageModelTool:asafelobotomy_get_workspace_profile_association",
+    "onLanguageModelTool:asafelobotomy_get_profile_details",
     "onLanguageModelTool:asafelobotomy_ensure_repo_profile",
     "onLanguageModelTool:asafelobotomy_get_installed_extensions",
     "onLanguageModelTool:asafelobotomy_sync_extensions_with_recommendations",
@@ -49,6 +54,9 @@
     "onLanguageModelTool:asafelobotomy_get_workspace_index"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
   "contributes": {
     "mcpServerDefinitionProviders": [
       {
@@ -86,7 +94,7 @@
     "commands": [
       {
         "command": "asafelobotomy.controlCenter.setupProject",
-        "title": "Set Up Project",
+        "title": "Set Up Instructions",
         "category": "aSafeLobotomy",
         "icon": "$(rocket)"
       },
@@ -261,8 +269,8 @@
           },
           {
             "id": "setupProject",
-            "title": "Start Template Setup",
-            "description": "Open Copilot Chat with the canonical setup trigger so the template's Setup agent can personalize this workspace.\n[Set Up Project](command:asafelobotomy.controlCenter.setupProject)",
+            "title": "Set Up Instructions",
+            "description": "Open Copilot Chat with the canonical setup trigger so the template's Setup agent can personalize this workspace.\n[Set Up Instructions](command:asafelobotomy.controlCenter.setupProject)",
             "media": {
               "image": "media/control-center.svg",
               "altText": "Starting template setup"
@@ -310,30 +318,17 @@
         ]
       }
     ],
-    "configuration": {
-      "title": "aSafeLobotomy's Copilot Extension",
-      "properties": {
-        "asafelobotomy.profileName": {
-          "type": "string",
-          "default": "",
-          "description": "Name of the active VS Code profile for this workspace. Used after template lifecycle setup to help Copilot agents detect the intended profile."
-        },
-        "asafelobotomy.knownProfiles": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "List of known VS Code profile names. Populated automatically when ensure_repo_profile is called."
-        }
-      }
-    },
     "languageModelTools": [
       {
         "name": "asafelobotomy_get_active_profile",
-        "tags": ["asafelobotomy", "profile"],
+        "tags": [
+          "asafelobotomy",
+          "profile"
+        ],
         "toolReferenceName": "get_active_profile",
         "displayName": "Get Active Profile",
-        "userDescription": "Detect the active VS Code profile in the current window.",
-        "modelDescription": "Returns the name of the active VS Code profile for the current workspace. Uses the asafelobotomy.profileName setting. Returns empty string if not configured.",
+        "userDescription": "Detect the VS Code profile associated with the current workspace.",
+        "modelDescription": "Returns the VS Code profile associated with the current workspace by reading VS Code user-data profile associations.",
         "canBeReferencedInPrompt": true,
         "icon": "$(account)",
         "inputSchema": {
@@ -343,11 +338,14 @@
       },
       {
         "name": "asafelobotomy_list_profiles",
-        "tags": ["asafelobotomy", "profile"],
+        "tags": [
+          "asafelobotomy",
+          "profile"
+        ],
         "toolReferenceName": "list_profiles",
         "displayName": "List Profiles",
-        "userDescription": "List all known VS Code profiles from configuration.",
-        "modelDescription": "Returns an array of profile names configured in the asafelobotomy.knownProfiles setting. Profiles are registered when ensure_repo_profile is called.",
+        "userDescription": "List the real VS Code profiles available on this machine.",
+        "modelDescription": "Returns the locally available VS Code user profiles discovered from VS Code user data, including section availability for each profile.",
         "canBeReferencedInPrompt": true,
         "icon": "$(list-unordered)",
         "inputSchema": {
@@ -357,11 +355,14 @@
       },
       {
         "name": "asafelobotomy_get_workspace_profile_association",
-        "tags": ["asafelobotomy", "profile"],
+        "tags": [
+          "asafelobotomy",
+          "profile"
+        ],
         "toolReferenceName": "get_workspace_profile_association",
         "displayName": "Get Workspace Profile Association",
         "userDescription": "Check if this workspace has a profile binding.",
-        "modelDescription": "Returns the profile name associated with the current workspace, or null if no association exists. Reads from asafelobotomy.profileName in workspace settings.",
+        "modelDescription": "Returns the VS Code profile associated with the current workspace from VS Code user-data associations.",
         "canBeReferencedInPrompt": true,
         "icon": "$(link)",
         "inputSchema": {
@@ -370,12 +371,41 @@
         }
       },
       {
+        "name": "asafelobotomy_get_profile_details",
+        "tags": [
+          "asafelobotomy",
+          "profile"
+        ],
+        "toolReferenceName": "get_profile_details",
+        "displayName": "Get Profile Details",
+        "userDescription": "Inspect settings and profile-scoped content for a VS Code profile.",
+        "modelDescription": "Returns the parsed settings plus available profile-scoped content for a real VS Code profile, including extensions, snippets, chat language models, and global storage entry names. Provide profileId or profileName, or omit both to inspect the current workspace profile.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(settings-gear)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profileId": {
+              "type": "string",
+              "description": "Optional VS Code profile ID, such as -35614cc3 or __default__profile__."
+            },
+            "profileName": {
+              "type": "string",
+              "description": "Optional VS Code profile display name. Used when profileId is not provided."
+            }
+          }
+        }
+      },
+      {
         "name": "asafelobotomy_ensure_repo_profile",
-        "tags": ["asafelobotomy", "profile"],
+        "tags": [
+          "asafelobotomy",
+          "profile"
+        ],
         "toolReferenceName": "ensure_repo_profile",
         "displayName": "Ensure Repo Profile",
         "userDescription": "Create and/or switch to a repo-specific VS Code profile.",
-        "modelDescription": "Opens the current workspace in a named VS Code profile using 'code . --profile <name>'. If the profile does not exist, VS Code creates it automatically. Sets asafelobotomy.profileName in workspace settings. Profile name must contain only letters, numbers, spaces, hyphens, underscores, and dots.",
+        "modelDescription": "Opens the current workspace in a named VS Code profile using the VS Code CLI and --profile. If the profile does not exist, VS Code creates it automatically on open. Profile name must contain only letters, numbers, spaces, hyphens, underscores, and dots.",
         "canBeReferencedInPrompt": true,
         "icon": "$(person-add)",
         "inputSchema": {
@@ -393,7 +423,10 @@
       },
       {
         "name": "asafelobotomy_get_installed_extensions",
-        "tags": ["asafelobotomy", "extensions"],
+        "tags": [
+          "asafelobotomy",
+          "extensions"
+        ],
         "toolReferenceName": "get_installed_extensions",
         "displayName": "Get Installed Extensions",
         "userDescription": "List all installed VS Code extensions with version info.",
@@ -407,7 +440,10 @@
       },
       {
         "name": "asafelobotomy_install_extension",
-        "tags": ["asafelobotomy", "extensions"],
+        "tags": [
+          "asafelobotomy",
+          "extensions"
+        ],
         "toolReferenceName": "install_extension",
         "displayName": "Install Extension",
         "userDescription": "Install a VS Code extension by publisher.extensionId.",
@@ -422,12 +458,17 @@
               "description": "The full extension ID in 'publisher.extensionName' format (e.g. 'ms-python.python')."
             }
           },
-          "required": ["extensionId"]
+          "required": [
+            "extensionId"
+          ]
         }
       },
       {
         "name": "asafelobotomy_uninstall_extension",
-        "tags": ["asafelobotomy", "extensions"],
+        "tags": [
+          "asafelobotomy",
+          "extensions"
+        ],
         "toolReferenceName": "uninstall_extension",
         "displayName": "Uninstall Extension",
         "userDescription": "Uninstall a VS Code extension by publisher.extensionId.",
@@ -442,12 +483,17 @@
               "description": "The full extension ID in 'publisher.extensionName' format (e.g. 'ms-python.python')."
             }
           },
-          "required": ["extensionId"]
+          "required": [
+            "extensionId"
+          ]
         }
       },
       {
         "name": "asafelobotomy_sync_extensions_with_recommendations",
-        "tags": ["asafelobotomy", "extensions"],
+        "tags": [
+          "asafelobotomy",
+          "extensions"
+        ],
         "toolReferenceName": "sync_extensions_with_recommendations",
         "displayName": "Sync Extensions with Recommendations",
         "userDescription": "Compare installed extensions against .vscode/extensions.json recommendations.",
@@ -461,7 +507,10 @@
       },
       {
         "name": "asafelobotomy_get_mcp_status",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "get_mcp_status",
         "displayName": "Get MCP Server Status",
         "userDescription": "Check the status of all configured MCP servers.",
@@ -475,7 +524,10 @@
       },
       {
         "name": "asafelobotomy_get_mcp_server_config",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "get_mcp_server_config",
         "displayName": "Get MCP Server Config",
         "userDescription": "Get the full configuration of a specific MCP server.",
@@ -490,12 +542,17 @@
               "description": "The name of the MCP server as defined in .vscode/mcp.json (e.g. 'filesystem', 'git', 'heartbeat')."
             }
           },
-          "required": ["serverName"]
+          "required": [
+            "serverName"
+          ]
         }
       },
       {
         "name": "asafelobotomy_toggle_mcp_server",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "toggle_mcp_server",
         "displayName": "Toggle MCP Server",
         "userDescription": "Enable or disable an MCP server in .vscode/mcp.json.",
@@ -514,12 +571,18 @@
               "description": "true to enable the server, false to disable it."
             }
           },
-          "required": ["serverName", "enabled"]
+          "required": [
+            "serverName",
+            "enabled"
+          ]
         }
       },
       {
         "name": "asafelobotomy_restart_mcp_server",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "restart_mcp_server",
         "displayName": "Restart MCP Server",
         "userDescription": "Trigger a restart of MCP servers by re-resolving definitions.",
@@ -533,7 +596,10 @@
       },
       {
         "name": "asafelobotomy_add_mcp_server",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "add_mcp_server",
         "displayName": "Add MCP Server",
         "userDescription": "Add a new MCP server to .vscode/mcp.json.",
@@ -549,7 +615,10 @@
             },
             "type": {
               "type": "string",
-              "enum": ["stdio", "http"],
+              "enum": [
+                "stdio",
+                "http"
+              ],
               "description": "Server transport type: 'stdio' for local process, 'http' for remote HTTP/SSE endpoint."
             },
             "command": {
@@ -558,7 +627,9 @@
             },
             "args": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "For stdio servers: command arguments."
             },
             "url": {
@@ -570,12 +641,18 @@
               "description": "Optional environment variables as key-value pairs."
             }
           },
-          "required": ["serverName", "type"]
+          "required": [
+            "serverName",
+            "type"
+          ]
         }
       },
       {
         "name": "asafelobotomy_remove_mcp_server",
-        "tags": ["asafelobotomy", "mcp"],
+        "tags": [
+          "asafelobotomy",
+          "mcp"
+        ],
         "toolReferenceName": "remove_mcp_server",
         "displayName": "Remove MCP Server",
         "userDescription": "Remove an MCP server from .vscode/mcp.json.",
@@ -590,12 +667,17 @@
               "description": "The name of the MCP server to remove."
             }
           },
-          "required": ["serverName"]
+          "required": [
+            "serverName"
+          ]
         }
       },
       {
         "name": "asafelobotomy_get_workspace_info",
-        "tags": ["asafelobotomy", "workspace"],
+        "tags": [
+          "asafelobotomy",
+          "workspace"
+        ],
         "toolReferenceName": "get_workspace_info",
         "displayName": "Get Workspace Info",
         "userDescription": "Detect OS, project manifest, git state, and runtime versions for the current workspace.",
@@ -609,7 +691,11 @@
       },
       {
         "name": "asafelobotomy_get_workspace_state",
-        "tags": ["asafelobotomy", "workspace", "heartbeat"],
+        "tags": [
+          "asafelobotomy",
+          "workspace",
+          "heartbeat"
+        ],
         "toolReferenceName": "get_workspace_state",
         "displayName": "Get Workspace State",
         "userDescription": "Read the current session state, recent heartbeat events, and HEARTBEAT.md summary.",
@@ -623,7 +709,10 @@
       },
       {
         "name": "asafelobotomy_get_workspace_index",
-        "tags": ["asafelobotomy", "workspace"],
+        "tags": [
+          "asafelobotomy",
+          "workspace"
+        ],
         "toolReferenceName": "get_workspace_index",
         "displayName": "Get Workspace Index",
         "userDescription": "Read the canonical workspace inventory from workspace-index.json.",
@@ -637,7 +726,10 @@
       },
       {
         "name": "asafelobotomy_session_reflect",
-        "tags": ["asafelobotomy", "heartbeat"],
+        "tags": [
+          "asafelobotomy",
+          "heartbeat"
+        ],
         "toolReferenceName": "session_reflect",
         "displayName": "Session Reflect",
         "userDescription": "Reflect on the current coding session with metrics and personalised prompts.",
@@ -651,7 +743,10 @@
       },
       {
         "name": "asafelobotomy_spatial_status",
-        "tags": ["asafelobotomy", "heartbeat"],
+        "tags": [
+          "asafelobotomy",
+          "heartbeat"
+        ],
         "toolReferenceName": "spatial_status",
         "displayName": "Spatial Status",
         "userDescription": "Get a compact workspace navigation snapshot with vocabulary, diaries, and session clock.",
@@ -664,6 +759,9 @@
         }
       }
     ]
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
+import {
+  displayUriPath,
+  joinWorkspaceUri,
+  readJsonFile,
+} from "../workspaceFs";
 
 class GetInstalledExtensionsTool
   implements vscode.LanguageModelTool<Record<string, never>>
@@ -41,8 +44,8 @@ class SyncExtensionsWithRecommendationsTool
     _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders?.length) {
+    const extJsonUri = joinWorkspaceUri(".vscode", "extensions.json");
+    if (!extJsonUri) {
       return new vscode.LanguageModelToolResult([
         new vscode.LanguageModelTextPart(
           JSON.stringify({ error: "No workspace folder open." })
@@ -50,29 +53,22 @@ class SyncExtensionsWithRecommendationsTool
       ]);
     }
 
-    const extJsonPath = path.join(
-      workspaceFolders[0].uri.fsPath,
-      ".vscode",
-      "extensions.json"
-    );
-
     let recommendations: string[] = [];
-    try {
-      const raw = fs.readFileSync(extJsonPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      recommendations = (parsed.recommendations ?? []).map((r: string) =>
-        r.toLowerCase()
-      );
-    } catch {
+    const parsed = await readJsonFile<{ recommendations?: string[] }>(extJsonUri);
+    if (!parsed) {
       return new vscode.LanguageModelToolResult([
         new vscode.LanguageModelTextPart(
           JSON.stringify({
             error: "Could not read .vscode/extensions.json",
-            path: extJsonPath,
+            path: displayUriPath(extJsonUri),
           })
         ),
       ]);
     }
+
+    recommendations = (parsed.recommendations ?? []).map((r: string) =>
+      r.toLowerCase()
+    );
 
     const installed = new Set(
       vscode.extensions.all

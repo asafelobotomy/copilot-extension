@@ -1,5 +1,15 @@
 import * as vscode from "vscode";
 import { spawn, spawnSync } from "child_process";
+import {
+  configureProfileStore,
+  getProfileById,
+  getProfileByName,
+  getProfileDetails,
+  getWorkspaceProfileAssociation as getStoredWorkspaceProfileAssociation,
+  listUserDataProfiles,
+  resolveProfileStorePaths,
+} from "../profile/store";
+import { ProfileSummary } from "../profile/types";
 
 const SAFE_PROFILE_NAME_RE = /^[\w\s\-.]+$/;
 
@@ -8,8 +18,66 @@ interface EnsureRepoProfileResult {
   switched: boolean;
   cli?: string;
   target?: string;
+  profileId?: string | null;
+  profileExists?: boolean;
   note?: string;
   error?: string;
+}
+
+interface ProfileDetailsToolInput {
+  profileId?: string;
+  profileName?: string;
+}
+
+function jsonResult(value: unknown): vscode.LanguageModelToolResult {
+  return new vscode.LanguageModelToolResult([
+    new vscode.LanguageModelTextPart(JSON.stringify(value)),
+  ]);
+}
+
+async function resolveRequestedProfile(
+  input: ProfileDetailsToolInput
+): Promise<ProfileSummary | null> {
+  if (input.profileId) {
+    return getProfileById(input.profileId);
+  }
+
+  if (input.profileName) {
+    return getProfileByName(input.profileName);
+  }
+
+  const association = await getStoredWorkspaceProfileAssociation();
+  return association.profile;
+}
+
+function resolveCliTarget(): { target: string; args: string[] } | null {
+  const workspaceFile = vscode.workspace.workspaceFile;
+  if (workspaceFile) {
+    return workspaceFile.scheme === "file"
+      ? {
+          target: workspaceFile.fsPath,
+          args: [workspaceFile.fsPath],
+        }
+      : {
+          target: workspaceFile.toString(),
+          args: ["--file-uri", workspaceFile.toString()],
+        };
+  }
+
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!workspaceFolder) {
+    return null;
+  }
+
+  return workspaceFolder.scheme === "file"
+    ? {
+        target: workspaceFolder.fsPath,
+        args: [workspaceFolder.fsPath],
+      }
+    : {
+        target: workspaceFolder.toString(),
+        args: ["--folder-uri", workspaceFolder.toString()],
+      };
 }
 
 function resolveCodeCli(): string | null {
@@ -41,31 +109,13 @@ export async function ensureRepoProfile(
     };
   }
 
-  const target =
-    vscode.workspace.workspaceFile?.fsPath ??
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!target) {
+  const cliTarget = resolveCliTarget();
+  if (!cliTarget) {
     return {
       profileName,
       switched: false,
       error: "No workspace folder or workspace file open.",
     };
-  }
-
-  const config = vscode.workspace.getConfiguration("asafelobotomy");
-  await config.update(
-    "profileName",
-    profileName,
-    vscode.ConfigurationTarget.Workspace
-  );
-
-  const known = config.get<string[]>("knownProfiles", []);
-  if (!known.includes(profileName)) {
-    await config.update(
-      "knownProfiles",
-      [...known, profileName],
-      vscode.ConfigurationTarget.Global
-    );
   }
 
   const cli = resolveCodeCli();
@@ -78,8 +128,10 @@ export async function ensureRepoProfile(
     };
   }
 
+  const existingProfile = await getProfileByName(profileName);
+
   try {
-    const child = spawn(cli, [target, "--profile", profileName], {
+    const child = spawn(cli, [...cliTarget.args, "--profile", profileName], {
       detached: true,
       stdio: "ignore",
     });
@@ -89,7 +141,9 @@ export async function ensureRepoProfile(
       profileName,
       switched: false,
       cli,
-      target,
+      target: cliTarget.target,
+      profileId: existingProfile?.id ?? null,
+      profileExists: Boolean(existingProfile),
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -98,8 +152,12 @@ export async function ensureRepoProfile(
     profileName,
     switched: true,
     cli,
-    target,
-    note: "VS Code will open the current workspace in the requested profile.",
+    target: cliTarget.target,
+    profileId: existingProfile?.id ?? null,
+    profileExists: Boolean(existingProfile),
+    note: existingProfile
+      ? "VS Code will reopen the current workspace in the requested profile."
+      : "VS Code will create the requested profile on open and reopen the current workspace in it.",
   };
 }
 
@@ -117,17 +175,36 @@ class GetActiveProfileTool
     _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const config = vscode.workspace.getConfiguration("asafelobotomy");
-    const profileName = config.get<string>("profileName", "");
-    return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(
-        JSON.stringify({
-          profileName: profileName || null,
-          configured: profileName !== "",
-          workspaceName: vscode.workspace.name ?? null,
-        })
-      ),
-    ]);
+    const association = await getStoredWorkspaceProfileAssociation();
+    const paths = resolveProfileStorePaths();
+
+    return jsonResult({
+      workspaceName: vscode.workspace.name ?? null,
+      workspaceUri: association.workspaceUri,
+      associated: association.associated,
+      source: association.source,
+      profile: association.profile
+        ? {
+            id: association.profile.id,
+            name: association.profile.name,
+            isDefault: association.profile.isDefault,
+            exists: association.profile.exists,
+          }
+        : association.profileId
+          ? {
+              id: association.profileId,
+            name: association.profileName,
+              isDefault: association.isDefault,
+              exists: false,
+            }
+          : null,
+      store: {
+        available: Boolean(paths),
+        userRoot: paths?.userRoot ?? null,
+      },
+      note:
+        "No stable VS Code extension API exposes the current user profile. This result reflects the profile associated with the current workspace.",
+    });
   }
 }
 
@@ -135,18 +212,25 @@ class ListProfilesTool
   implements vscode.LanguageModelTool<Record<string, never>>
 {
   async prepareInvocation() {
-    return { invocationMessage: "Listing known profiles…" };
+    return { invocationMessage: "Listing VS Code profiles…" };
   }
 
   async invoke(
     _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const config = vscode.workspace.getConfiguration("asafelobotomy");
-    const profiles = config.get<string[]>("knownProfiles", []);
-    return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(JSON.stringify({ profiles })),
-    ]);
+    const profiles = await listUserDataProfiles();
+
+    return jsonResult({
+      profiles: profiles.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        isDefault: profile.isDefault,
+        exists: profile.exists,
+        sections: profile.sections,
+      })),
+      count: profiles.length,
+    });
   }
 }
 
@@ -161,17 +245,59 @@ class GetWorkspaceProfileAssociationTool
     _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const config = vscode.workspace.getConfiguration("asafelobotomy");
-    const profileName = config.get<string>("profileName", "");
-    return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(
-        JSON.stringify({
-          workspace: vscode.workspace.name ?? null,
-          profile: profileName || null,
-          bound: profileName !== "",
-        })
-      ),
-    ]);
+    const association = await getStoredWorkspaceProfileAssociation();
+
+    return jsonResult({
+      workspace: vscode.workspace.name ?? null,
+      workspaceUri: association.workspaceUri,
+      profileId: association.profileId,
+      profileName: association.profileName,
+      isDefault: association.isDefault,
+      bound: association.associated,
+      source: association.source,
+      profile: association.profile,
+    });
+  }
+}
+
+class GetProfileDetailsTool
+  implements vscode.LanguageModelTool<ProfileDetailsToolInput>
+{
+  async prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<ProfileDetailsToolInput>,
+    _token: vscode.CancellationToken
+  ) {
+    return {
+      invocationMessage: options.input.profileName || options.input.profileId
+        ? "Inspecting VS Code profile details…"
+        : "Inspecting the current workspace profile details…",
+    };
+  }
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ProfileDetailsToolInput>,
+    _token: vscode.CancellationToken
+  ): Promise<vscode.LanguageModelToolResult> {
+    const profile = await resolveRequestedProfile(options.input);
+
+    if (!profile) {
+      return jsonResult({
+        error:
+          "No real VS Code profile matched the request. Provide profileId or profileName, or associate the current workspace with a profile first.",
+        requested: options.input,
+      });
+    }
+
+    const details = await getProfileDetails(profile);
+
+    return jsonResult({
+      profile: details.profile,
+      settings: details.settings,
+      extensions: details.extensions,
+      snippets: details.snippets,
+      chatLanguageModels: details.chatLanguageModels,
+      globalStorageEntries: details.globalStorageEntries,
+    });
   }
 }
 
@@ -203,27 +329,32 @@ class EnsureRepoProfileTool
   ): Promise<vscode.LanguageModelToolResult> {
     const result = await ensureRepoProfile(options.input.profileName);
 
-    return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(
-        JSON.stringify(
-          result.error
-            ? { error: result.error, profileName: result.profileName }
-            : {
-                action: "profile_switch",
-                profileName: result.profileName,
-                cli: result.cli,
-                target: result.target,
-                note: result.note,
-              }
-        )
-      ),
-    ]);
+    return jsonResult(
+      result.error
+        ? {
+            error: result.error,
+            profileName: result.profileName,
+            profileId: result.profileId ?? null,
+            profileExists: result.profileExists ?? false,
+          }
+        : {
+            action: "profile_switch",
+            profileName: result.profileName,
+            profileId: result.profileId ?? null,
+            profileExists: result.profileExists ?? false,
+            cli: result.cli,
+            target: result.target,
+            note: result.note,
+          }
+    );
   }
 }
 
 export function registerProfileTools(
   context: vscode.ExtensionContext
 ): void {
+  configureProfileStore(context.globalStorageUri);
+
   context.subscriptions.push(
     vscode.lm.registerTool(
       "asafelobotomy_get_active_profile",
@@ -236,6 +367,10 @@ export function registerProfileTools(
     vscode.lm.registerTool(
       "asafelobotomy_get_workspace_profile_association",
       new GetWorkspaceProfileAssociationTool()
+    ),
+    vscode.lm.registerTool(
+      "asafelobotomy_get_profile_details",
+      new GetProfileDetailsTool()
     ),
     vscode.lm.registerTool(
       "asafelobotomy_ensure_repo_profile",

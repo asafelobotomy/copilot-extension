@@ -7,6 +7,7 @@ import { registerHeartbeatTools } from "./tools/heartbeat";
 import { McpProvider } from "./mcp/provider";
 import { registerControlCenter } from "./controlCenter";
 import { registerMcpTreeView } from "./mcpTreeView";
+import { configureProfileStore } from "./profile/store";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel(
@@ -17,6 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
   output.appendLine(
     `Activating aSafeLobotomy's Copilot Extension v${extensionVersion}`
   );
+  configureProfileStore(context.globalStorageUri);
 
   // Phase 1 — Profile & Extension LM Tools (stable API)
   registerProfileTools(context);

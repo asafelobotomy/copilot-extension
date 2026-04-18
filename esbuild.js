@@ -11,6 +11,7 @@ const config = {
   format: "cjs",
   platform: "node",
   target: "node22",
+  mainFields: ["module", "main"],
   sourcemap: true,
   minify: !watch,
 };

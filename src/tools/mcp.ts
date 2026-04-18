@@ -1,7 +1,11 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 import { McpProvider } from "../mcp/provider";
+import {
+  displayUriPath,
+  joinWorkspaceUri,
+  readJsonFile,
+  writeTextFile,
+} from "../workspaceFs";
 
 interface McpServerConfig {
   type: string;
@@ -20,24 +24,35 @@ interface McpJsonFile {
 }
 
 async function readMcpJson(): Promise<{
+  uri: vscode.Uri | null;
   path: string;
   data: McpJsonFile | null;
   error?: string;
 }> {
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders?.length) {
-    return { path: "", data: null, error: "No workspace folder open." };
+  const mcpJsonUri = joinWorkspaceUri(".vscode", "mcp.json");
+  if (!mcpJsonUri) {
+    return {
+      uri: null,
+      path: "",
+      data: null,
+      error: "No workspace folder open.",
+    };
   }
-  const mcpJsonPath = path.join(
-    workspaceFolders[0].uri.fsPath,
-    ".vscode",
-    "mcp.json"
-  );
+  const mcpJsonPath = displayUriPath(mcpJsonUri) ?? "";
+
   try {
-    const raw = await fs.promises.readFile(mcpJsonPath, "utf-8");
-    return { path: mcpJsonPath, data: JSON.parse(raw) };
+    const data = await readJsonFile<McpJsonFile>(mcpJsonUri);
+    return data
+      ? { uri: mcpJsonUri, path: mcpJsonPath, data }
+      : {
+          uri: mcpJsonUri,
+          path: mcpJsonPath,
+          data: null,
+          error: "Could not read .vscode/mcp.json",
+        };
   } catch {
     return {
+      uri: mcpJsonUri,
       path: mcpJsonPath,
       data: null,
       error: "Could not read .vscode/mcp.json",
@@ -45,8 +60,8 @@ async function readMcpJson(): Promise<{
   }
 }
 
-async function writeMcpJson(mcpJsonPath: string, data: McpJsonFile): Promise<void> {
-  await fs.promises.writeFile(mcpJsonPath, JSON.stringify(data, null, "\t") + "\n");
+async function writeMcpJson(mcpJsonUri: vscode.Uri, data: McpJsonFile): Promise<void> {
+  await writeTextFile(mcpJsonUri, JSON.stringify(data, null, "\t") + "\n");
 }
 
 function jsonResult(obj: unknown): vscode.LanguageModelToolResult {
@@ -164,8 +179,8 @@ class ToggleMcpServerTool
       enabled: boolean;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = await readMcpJson();
-    if (!data) {
+    const { uri: mcpUri, data, error } = await readMcpJson();
+    if (!mcpUri || !data) {
       return jsonResult({ error });
     }
 
@@ -179,12 +194,12 @@ class ToggleMcpServerTool
     }
 
     if (options.input.enabled) {
-      delete (config as Record<string, unknown>).disabled;
+      delete config.disabled;
     } else {
-      (config as Record<string, unknown>).disabled = true;
+      config.disabled = true;
     }
 
-    await writeMcpJson(mcpPath, data);
+    await writeMcpJson(mcpUri, data);
 
     return jsonResult({
       action: options.input.enabled ? "enabled" : "disabled",
@@ -260,8 +275,8 @@ class AddMcpServerTool
       env?: Record<string, string>;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = await readMcpJson();
-    if (!data) {
+    const { uri: mcpUri, data, error } = await readMcpJson();
+    if (!mcpUri || !data) {
       return jsonResult({ error });
     }
 
@@ -275,7 +290,7 @@ class AddMcpServerTool
       });
     }
 
-    const entry: Record<string, unknown> = {
+    const entry: McpServerConfig = {
       type: options.input.type,
     };
     if (options.input.type === "http" && options.input.url) {
@@ -288,8 +303,8 @@ class AddMcpServerTool
       entry.env = options.input.env;
     }
 
-    data.servers[options.input.serverName] = entry as McpServerConfig;
-    await writeMcpJson(mcpPath, data);
+    data.servers[options.input.serverName] = entry;
+    await writeMcpJson(mcpUri, data);
 
     return jsonResult({
       action: "server_added",
@@ -324,8 +339,8 @@ class RemoveMcpServerTool
       serverName: string;
     }>
   ): Promise<vscode.LanguageModelToolResult> {
-    const { path: mcpPath, data, error } = await readMcpJson();
-    if (!data) {
+    const { uri: mcpUri, data, error } = await readMcpJson();
+    if (!mcpUri || !data) {
       return jsonResult({ error });
     }
 
@@ -338,7 +353,7 @@ class RemoveMcpServerTool
     }
 
     delete servers[options.input.serverName];
-    await writeMcpJson(mcpPath, data);
+    await writeMcpJson(mcpUri, data);
 
     return jsonResult({
       action: "server_removed",

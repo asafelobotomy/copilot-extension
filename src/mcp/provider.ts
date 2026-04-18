@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
+import { joinWorkspaceUri, readTextFile } from "../workspaceFs";
 
 /**
  * McpProvider registers as an MCP server definition provider using the
@@ -92,22 +91,25 @@ export class McpProvider {
   private async provideMcpServerDefinitions(
     _token: vscode.CancellationToken
   ): Promise<unknown[]> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders?.length) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
       return [];
     }
 
-    const mcpJsonPath = path.join(
-      workspaceFolders[0].uri.fsPath,
-      ".vscode",
-      "mcp.json"
-    );
+    const mcpJsonUri = joinWorkspaceUri(".vscode", "mcp.json");
+    if (!mcpJsonUri) {
+      return [];
+    }
 
     try {
-      const raw = fs.readFileSync(mcpJsonPath, "utf-8");
+      const raw = await readTextFile(mcpJsonUri);
+      if (!raw) {
+        throw new Error("Could not read mcp.json for provider.");
+      }
+
       const parsed = JSON.parse(raw);
       const servers = parsed.servers ?? {};
-      const cwdUri = workspaceFolders[0].uri;
+      const cwdUri = workspaceFolder.uri;
       const definitions: unknown[] = [];
 
       for (const [name, config] of Object.entries(servers)) {

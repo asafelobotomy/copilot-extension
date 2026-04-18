@@ -1,7 +1,15 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 import { execSync } from "child_process";
+import {
+	appendTextFile,
+	displayUriPath,
+	getPrimaryWorkspaceUri,
+	joinFromUri,
+	pathExists,
+	readJsonFile as readWorkspaceJsonFile,
+	readTextFile as readWorkspaceTextFile,
+	writeTextFile,
+} from "../workspaceFs";
 
 function jsonResult(obj: unknown): vscode.LanguageModelToolResult {
 	return new vscode.LanguageModelToolResult([
@@ -9,33 +17,19 @@ function jsonResult(obj: unknown): vscode.LanguageModelToolResult {
 	]);
 }
 
-function getWorkspaceRoot(): string | null {
-	const folders = vscode.workspace.workspaceFolders;
-	return folders?.length ? folders[0].uri.fsPath : null;
-}
-
-function readJsonFile(filePath: string): Record<string, unknown> | null {
-	try {
-		const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-		return typeof data === "object" && data !== null ? data : null;
-	} catch {
-		return null;
-	}
-}
-
-function getWorkspacePaths(root: string) {
-	const ws = path.join(root, ".copilot", "workspace");
+function getWorkspacePaths(root: vscode.Uri) {
+	const ws = joinFromUri(root, ".copilot", "workspace")!;
 	return {
 		workspace: ws,
-		state: path.join(ws, "runtime", "state.json"),
-		events: path.join(ws, "runtime", ".heartbeat-events.jsonl"),
-		sentinel: path.join(ws, "runtime", ".heartbeat-session"),
-		heartbeat: path.join(ws, "operations", "HEARTBEAT.md"),
-		soul: path.join(ws, "identity", "SOUL.md"),
-		memory: path.join(ws, "knowledge", "MEMORY.md"),
-		user: path.join(ws, "knowledge", "USER.md"),
-		diaries: path.join(ws, "knowledge", "diaries"),
-		ledger: path.join(ws, "operations", "ledger.md"),
+		state: joinFromUri(ws, "runtime", "state.json")!,
+		events: joinFromUri(ws, "runtime", ".heartbeat-events.jsonl")!,
+		sentinel: joinFromUri(ws, "runtime", ".heartbeat-session")!,
+		heartbeat: joinFromUri(ws, "operations", "HEARTBEAT.md")!,
+		soul: joinFromUri(ws, "identity", "SOUL.md")!,
+		memory: joinFromUri(ws, "knowledge", "MEMORY.md")!,
+		user: joinFromUri(ws, "knowledge", "USER.md")!,
+		diaries: joinFromUri(ws, "knowledge", "diaries")!,
+		ledger: joinFromUri(ws, "operations", "ledger.md")!,
 	};
 }
 
@@ -45,24 +39,15 @@ function isoUtc(epochSeconds: number): string {
 		.replace(/\.\d+Z$/, "Z");
 }
 
-function ensureParentDir(filePath: string): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+async function writeJsonFile(filePath: vscode.Uri, payload: unknown): Promise<void> {
+	await writeTextFile(filePath, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function writeJsonFile(filePath: string, payload: unknown): void {
-	ensureParentDir(filePath);
-	fs.writeFileSync(
-		filePath,
-		`${JSON.stringify(payload, null, 2)}\n`,
-		"utf-8"
-	);
-}
-
-function persistReflectionCompletion(
+async function persistReflectionCompletion(
 	paths: ReturnType<typeof getWorkspacePaths>,
 	state: Record<string, unknown>,
 	now: number
-): {
+): Promise<{
 	updatedState: Record<string, unknown>;
 	markers: {
 		state: boolean;
@@ -70,7 +55,7 @@ function persistReflectionCompletion(
 		event: boolean;
 	};
 	errors: string[];
-} {
+}> {
 	const sessionId = String(state.session_id ?? "unknown");
 	const updatedState: Record<string, unknown> = {
 		...state,
@@ -86,7 +71,7 @@ function persistReflectionCompletion(
 	const errors: string[] = [];
 
 	try {
-		writeJsonFile(paths.state, updatedState);
+		await writeJsonFile(paths.state, updatedState);
 		markers.state = true;
 	} catch (error) {
 		errors.push(
@@ -95,11 +80,9 @@ function persistReflectionCompletion(
 	}
 
 	try {
-		ensureParentDir(paths.sentinel);
-		fs.writeFileSync(
+		await writeTextFile(
 			paths.sentinel,
 			`${sessionId}|${isoUtc(now)}|complete\n`,
-			"utf-8"
 		);
 		markers.sentinel = true;
 	} catch (error) {
@@ -109,8 +92,7 @@ function persistReflectionCompletion(
 	}
 
 	try {
-		ensureParentDir(paths.events);
-		fs.appendFileSync(
+		await appendTextFile(
 			paths.events,
 			`${JSON.stringify({
 				detail: "complete",
@@ -119,7 +101,6 @@ function persistReflectionCompletion(
 				ts: now,
 				ts_utc: isoUtc(now),
 			})}\n`,
-			"utf-8"
 		);
 		markers.event = true;
 	} catch (error) {
@@ -131,30 +112,30 @@ function persistReflectionCompletion(
 	return { updatedState, markers, errors };
 }
 
-function loadState(statePath: string): Record<string, unknown> {
-	return readJsonFile(statePath) ?? {};
+async function loadState(statePath: vscode.Uri): Promise<Record<string, unknown>> {
+	return (await readWorkspaceJsonFile<Record<string, unknown>>(statePath)) ?? {};
 }
 
-function loadRecentEvents(
-	eventsPath: string,
+async function loadRecentEvents(
+	eventsPath: vscode.Uri,
 	limit: number = 50
-): Record<string, unknown>[] {
-	try {
-		const raw = fs.readFileSync(eventsPath, "utf-8");
-		const lines = raw.split("\n").filter((l) => l.trim());
-		return lines
-			.slice(-limit)
-			.map((l) => {
-				try {
-					return JSON.parse(l) as Record<string, unknown>;
-				} catch {
-					return null;
-				}
-			})
-			.filter((e): e is Record<string, unknown> => e !== null);
-	} catch {
+): Promise<Record<string, unknown>[]> {
+	const raw = await readWorkspaceTextFile(eventsPath);
+	if (!raw) {
 		return [];
 	}
+
+	const lines = raw.split("\n").filter((l) => l.trim());
+	return lines
+		.slice(-limit)
+		.map((l) => {
+			try {
+				return JSON.parse(l) as Record<string, unknown>;
+			} catch {
+				return null;
+			}
+		})
+		.filter((e): e is Record<string, unknown> => e !== null);
 }
 
 function gitModifiedCount(root: string): number {
@@ -192,15 +173,15 @@ function sessionEventsFilter(
 	});
 }
 
-function loadWorkspaceCues(paths: ReturnType<typeof getWorkspacePaths>): {
+async function loadWorkspaceCues(paths: ReturnType<typeof getWorkspacePaths>): Promise<{
 	soulValues: string[];
 	userAttributes: string[];
-} {
+}> {
 	const cues = { soulValues: [] as string[], userAttributes: [] as string[] };
 
 	// SOUL.md — extract bold values
-	try {
-		const soul = fs.readFileSync(paths.soul, "utf-8");
+	const soul = await readWorkspaceTextFile(paths.soul);
+	if (soul) {
 		for (const line of soul.split("\n")) {
 			const trimmed = line.trim();
 			if (trimmed.startsWith("- **") && trimmed.indexOf("**", 4) > 4) {
@@ -209,13 +190,11 @@ function loadWorkspaceCues(paths: ReturnType<typeof getWorkspacePaths>): {
 				if (cues.soulValues.length >= 5) break;
 			}
 		}
-	} catch {
-		// SOUL.md not present
 	}
 
 	// USER.md — extract table attributes
-	try {
-		const user = fs.readFileSync(paths.user, "utf-8");
+	const user = await readWorkspaceTextFile(paths.user);
+	if (user) {
 		let inTable = false;
 		for (const line of user.split("\n")) {
 			const trimmed = line.trim();
@@ -241,69 +220,69 @@ function loadWorkspaceCues(paths: ReturnType<typeof getWorkspacePaths>): {
 				inTable = false;
 			}
 		}
-	} catch {
-		// USER.md not present
 	}
 
 	return cues;
 }
 
-function readDiarySummaries(
-	diariesDir: string,
+async function readDiarySummaries(
+	diariesDir: vscode.Uri,
 	maxEntries: number = 3
-): Record<string, string[]> {
+): Promise<Record<string, string[]>> {
 	const summaries: Record<string, string[]> = {};
-	try {
-		const files = fs
-			.readdirSync(diariesDir)
-			.filter((f) => f.endsWith(".md") && f !== "README.md")
-			.sort();
-		for (const file of files) {
-			try {
-				const content = fs.readFileSync(
-					path.join(diariesDir, file),
-					"utf-8"
-				);
-				const bulletLines = content
-					.split("\n")
-					.map((l) => l.trim())
-					.filter((l) => l.startsWith("- "));
-				if (bulletLines.length > 0) {
-					summaries[file.replace(".md", "")] =
-						bulletLines.slice(-maxEntries);
-				}
-			} catch {
-				// skip unreadable diary
-			}
-		}
-	} catch {
-		// diaries dir doesn't exist
+	if (!(await pathExists(diariesDir))) {
+		return summaries;
 	}
+
+	const entries = await vscode.workspace.fs.readDirectory(diariesDir);
+	const files = entries
+		.filter(
+			([name, type]) =>
+				(type & vscode.FileType.File) !== 0 && name.endsWith(".md") && name !== "README.md"
+		)
+		.map(([name]) => name)
+		.sort();
+
+	for (const file of files) {
+		const content = await readWorkspaceTextFile(joinFromUri(diariesDir, file));
+		if (!content) {
+			continue;
+		}
+
+		const bulletLines = content
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.startsWith("- "));
+		if (bulletLines.length > 0) {
+			summaries[file.replace(".md", "")] = bulletLines.slice(-maxEntries);
+		}
+	}
+
 	return summaries;
 }
 
-function readVocabulary(ledgerPath: string): string[] {
-	try {
-		const content = fs.readFileSync(ledgerPath, "utf-8");
-		const vocab: string[] = [];
-		let inTable = false;
-		for (const line of content.split("\n")) {
-			if (line.includes("|") && (line.includes("Term") || line.includes("Meaning"))) {
-				inTable = true;
-				continue;
-			}
-			if (inTable && line.startsWith("|")) {
-				if (line.replace(/[|\- ]/g, "").trim()) {
-					vocab.push(line.trim());
-				}
-			} else if (inTable && !line.startsWith("|")) {
-				break;
-			}
-		}
-		return vocab;
-	} catch {
+async function readVocabulary(ledgerPath: vscode.Uri): Promise<string[]> {
+	const content = await readWorkspaceTextFile(ledgerPath);
+	if (!content) {
 		return [];
 	}
+
+	const vocab: string[] = [];
+	let inTable = false;
+	for (const line of content.split("\n")) {
+		if (line.includes("|") && (line.includes("Term") || line.includes("Meaning"))) {
+			inTable = true;
+			continue;
+		}
+		if (inTable && line.startsWith("|")) {
+			if (line.replace(/[|\- ]/g, "").trim()) {
+				vocab.push(line.trim());
+			}
+		} else if (inTable && !line.startsWith("|")) {
+			break;
+		}
+	}
+	return vocab;
 }
 
 function formatDuration(seconds: number): string {
@@ -326,14 +305,15 @@ class SessionReflectTool
 	}
 
 	async invoke(): Promise<vscode.LanguageModelToolResult> {
-		const root = getWorkspaceRoot();
-		if (!root) {
+		const rootUri = getPrimaryWorkspaceUri();
+		if (!rootUri) {
 			return jsonResult({ error: "No workspace folder open." });
 		}
 
-		const paths = getWorkspacePaths(root);
-		const state = loadState(paths.state);
+		const paths = getWorkspacePaths(rootUri);
+		const state = await loadState(paths.state);
 		const now = Math.floor(Date.now() / 1000);
+		const localRoot = rootUri.scheme === "file" ? rootUri.fsPath : null;
 
 		// Metrics
 		const sessionStart = Number(state.session_start_epoch ?? 0);
@@ -350,13 +330,13 @@ class SessionReflectTool
 
 		const deltaFiles = Math.max(
 			0,
-			gitModifiedCount(root) -
+			(localRoot ? gitModifiedCount(localRoot) : 0) -
 				Number(state.session_start_git_count ?? 0)
 		);
 		const editCount = Number(state.copilot_edit_count ?? 0);
 		const effectiveFiles = deltaFiles > 0 ? deltaFiles : editCount;
 
-		const allEvents = loadRecentEvents(paths.events, 50);
+		const allEvents = await loadRecentEvents(paths.events, 50);
 		const sessionEvents = sessionEventsFilter(allEvents, state);
 		const compactions = sessionEvents.filter(
 			(e) => e.trigger === "compaction"
@@ -390,7 +370,7 @@ class SessionReflectTool
 		}
 
 		// Personalised cues
-		const cues = loadWorkspaceCues(paths);
+		const cues = await loadWorkspaceCues(paths);
 		if (cues.soulValues.length > 0) {
 			prompts.push(
 				`SOUL values: ${cues.soulValues.slice(0, 3).join(", ")} — honoured?`
@@ -403,7 +383,7 @@ class SessionReflectTool
 		const today = new Date().toISOString().split("T")[0];
 		const sessionId = String(state.session_id ?? "unknown");
 		const shortId = sessionId.slice(0, 16);
-		const completion = persistReflectionCompletion(paths, state, now);
+		const completion = await persistReflectionCompletion(paths, state, now);
 
 		return jsonResult({
 			magnitude,
@@ -417,12 +397,12 @@ class SessionReflectTool
 			reflection_prompts: prompts,
 			memory_protocol: "See §14 Alignment Protocol.",
 			workspace_state: {
-				soul_exists: fs.existsSync(paths.soul),
-				memory_exists: fs.existsSync(paths.memory),
-				user_exists: fs.existsSync(paths.user),
+				soul_exists: await pathExists(paths.soul),
+				memory_exists: await pathExists(paths.memory),
+				user_exists: await pathExists(paths.user),
 			},
 			heartbeat_record: {
-				file: paths.heartbeat,
+				file: displayUriPath(paths.heartbeat),
 				instruction:
 					"Append to ## History (keep last 5); set Result (PASS/WARN/FAIL) and Actions taken.",
 				row_template: `| ${today} | ${shortId} | session_reflect | PASS | <actions taken> |`,
@@ -446,13 +426,13 @@ class SpatialStatusTool
 	}
 
 	async invoke(): Promise<vscode.LanguageModelToolResult> {
-		const root = getWorkspaceRoot();
-		if (!root) {
+		const rootUri = getPrimaryWorkspaceUri();
+		if (!rootUri) {
 			return jsonResult({ error: "No workspace folder open." });
 		}
 
-		const paths = getWorkspacePaths(root);
-		const state = loadState(paths.state);
+		const paths = getWorkspacePaths(rootUri);
+		const state = await loadState(paths.state);
 
 		// Clock summary (replicates heartbeat_clock_summary.py logic)
 		const now = Math.floor(Date.now() / 1000);
@@ -472,7 +452,7 @@ class SpatialStatusTool
 		}
 
 		// Median session duration from completed events
-		const allEvents = loadRecentEvents(paths.events, 200);
+		const allEvents = await loadRecentEvents(paths.events, 200);
 		const completedDurations = allEvents
 			.filter(
 				(e) => e.trigger === "stop" && e.detail === "complete"
@@ -498,8 +478,8 @@ class SpatialStatusTool
 			clockParts.length > 0 ? clockParts.join("; ") : "no session data";
 
 		return jsonResult({
-			vocabulary: readVocabulary(paths.ledger),
-			diaries: readDiarySummaries(paths.diaries),
+			vocabulary: await readVocabulary(paths.ledger),
+			diaries: await readDiarySummaries(paths.diaries),
 			clock,
 		});
 	}

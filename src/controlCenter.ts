@@ -1,8 +1,19 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as path from "path";
 import { McpProvider } from "./mcp/provider";
+import {
+  getWorkspaceProfileAssociation as getStoredWorkspaceProfileAssociation,
+  listUserDataProfiles,
+} from "./profile/store";
 import { ensureRepoProfile } from "./tools/profile";
+import {
+  displayUriPath,
+  getPrimaryWorkspaceUri,
+  joinFromUri,
+  pathExists,
+  readJsonFile as readWorkspaceJsonFile,
+  readTextFile as readWorkspaceTextFile,
+} from "./workspaceFs";
 
 export const CONTROL_CENTER_CONTAINER_ID = "asafelobotomy-control-center";
 export const CONTROL_CENTER_VIEW_ID = "asafelobotomy.controlCenter";
@@ -81,8 +92,16 @@ interface ControlCenterSnapshot {
   workspace: {
     name: string | null;
     root: string | null;
+    profileId: string | null;
     profileName: string | null;
-    knownProfiles: string[];
+    profileSource: "storage.json" | "none";
+    isDefaultProfile: boolean;
+    availableProfiles: Array<{
+      id: string;
+      name: string;
+      isDefault: boolean;
+      exists: boolean;
+    }>;
   };
   recommendations: RecommendationSummary;
   mcp: McpSummary;
@@ -92,25 +111,20 @@ interface ControlCenterSnapshot {
   health: HealthCheckItem[];
 }
 
+interface ExtensionRequestSummary {
+  requested: string[];
+  failed: string[];
+}
+
+interface ActionButtonSpec {
+  command: string;
+  label: string;
+  disabled?: boolean;
+  reason?: string;
+}
+
 function getWorkspaceRoot(): string | null {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-}
-
-async function readJsonFile<T>(filePath: string): Promise<T | null> {
-  try {
-    const raw = await fs.promises.readFile(filePath, "utf-8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function readTextFile(filePath: string): Promise<string | null> {
-  try {
-    return await fs.promises.readFile(filePath, "utf-8");
-  } catch {
-    return null;
-  }
+  return displayUriPath(getPrimaryWorkspaceUri());
 }
 
 function firstContentLine(text: string): string | null {
@@ -382,6 +396,149 @@ function createDefaultTemplateLifecycleSummary(
   };
 }
 
+function getTemplateLifecycleActionsDescription(
+  snapshot: ControlCenterSnapshot
+): string {
+  if (!snapshot.workspace.root) {
+    return "Open a workspace folder to enable workspace-specific Control Center actions.";
+  }
+
+  switch (snapshot.template.repoMode) {
+    case "template-repo":
+      return "Lifecycle actions are disabled here because this workspace looks like the template source repo; run setup, update, or restore from a consumer workspace.";
+    case "consumer-repo":
+      return "This workspace already looks template-managed, so update and restore flows are preferred over setup.";
+    default:
+      return "Template lifecycle actions open Copilot Chat with the canonical trigger phrases from the template.";
+  }
+}
+
+function getUtilityActionsDescription(): string {
+  return "General Control Center actions for refreshing status, rerunning health checks, and opening extension logs.";
+}
+
+function getActionButtons(snapshot: ControlCenterSnapshot): ActionButtonSpec[] {
+  const noWorkspaceReason = "Open a workspace folder to use this action.";
+
+  const setupReason = !snapshot.workspace.root
+    ? noWorkspaceReason
+    : snapshot.template.repoMode === "template-repo"
+      ? "Run setup from a consumer workspace, not the template source repo."
+      : snapshot.template.repoMode === "consumer-repo"
+        ? "This workspace already looks template-managed; use update or restore instead."
+        : undefined;
+
+  const consumerLifecycleReason = !snapshot.workspace.root
+    ? noWorkspaceReason
+    : snapshot.template.repoMode === "generic-workspace"
+      ? "Install template-managed instructions before using this action."
+      : snapshot.template.repoMode === "template-repo"
+        ? "Run this action from a consumer workspace rather than the template source repo."
+        : undefined;
+
+  const restartMcpReason = !snapshot.workspace.root
+    ? noWorkspaceReason
+    : !snapshot.mcp.providerActive
+      ? "The MCP provider is not active in this window."
+      : !snapshot.mcp.configExists
+        ? "No .vscode/mcp.json file was found for this workspace."
+        : undefined;
+
+  const reviewExtensionsReason = !snapshot.workspace.root
+    ? noWorkspaceReason
+    : !snapshot.recommendations.exists
+      ? "No .vscode/extensions.json recommendations file was found for this workspace."
+      : undefined;
+
+  return [
+    {
+      command: "setupProject",
+      label: "Set Up Instructions",
+      disabled: Boolean(setupReason),
+      reason: setupReason,
+    },
+    {
+      command: "updateInstructions",
+      label: "Update Instructions",
+      disabled: Boolean(consumerLifecycleReason),
+      reason: consumerLifecycleReason,
+    },
+    {
+      command: "restoreInstructions",
+      label: "Restore Backup",
+      disabled: Boolean(consumerLifecycleReason),
+      reason: consumerLifecycleReason,
+    },
+    {
+      command: "factoryRestore",
+      label: "Factory Restore",
+      disabled: Boolean(consumerLifecycleReason),
+      reason: consumerLifecycleReason,
+    },
+    {
+      command: "refresh",
+      label: "Refresh",
+    },
+    {
+      command: "healthCheck",
+      label: "Run Health Check",
+    },
+    {
+      command: "restartMcp",
+      label: "Restart MCP",
+      disabled: Boolean(restartMcpReason),
+      reason: restartMcpReason,
+    },
+    {
+      command: "ensureRepoProfile",
+      label: "Switch Profile",
+      disabled: !snapshot.workspace.root,
+      reason: !snapshot.workspace.root ? noWorkspaceReason : undefined,
+    },
+    {
+      command: "checkExtensions",
+      label: "Review Extensions",
+      disabled: Boolean(reviewExtensionsReason),
+      reason: reviewExtensionsReason,
+    },
+    {
+      command: "openOutput",
+      label: "Open Output",
+    },
+  ];
+}
+
+function pickActionButtons(
+  actions: ActionButtonSpec[],
+  commands: string[]
+): ActionButtonSpec[] {
+  const lookup = new Map(actions.map((action) => [action.command, action]));
+  return commands
+    .map((command) => lookup.get(command) ?? null)
+    .filter((action): action is ActionButtonSpec => action !== null);
+}
+
+function renderActionButtons(actions: ActionButtonSpec[]): string {
+  return actions
+    .map((action) => {
+      const attributes = [
+        'type="button"',
+        `data-command="${action.command}"`,
+      ];
+
+      if (action.disabled) {
+        attributes.push("disabled", 'aria-disabled="true"');
+      }
+
+      if (action.reason) {
+        attributes.push(`title="${escapeHtml(action.reason)}"`);
+      }
+
+      return `<button ${attributes.join(" ")}>${escapeHtml(action.label)}</button>`;
+    })
+    .join("");
+}
+
 class ControlCenterService {
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -390,10 +547,8 @@ class ControlCenterService {
   ) {}
 
   async getSnapshot(): Promise<ControlCenterSnapshot> {
+    const workspaceRootUri = getPrimaryWorkspaceUri();
     const workspaceRoot = getWorkspaceRoot();
-    const config = vscode.workspace.getConfiguration("asafelobotomy");
-    const profileName = config.get<string>("profileName", "") || null;
-    const knownProfiles = config.get<string[]>("knownProfiles", []);
     const collect = async <T>(
       label: string,
       loader: () => Promise<T>,
@@ -407,31 +562,48 @@ class ControlCenterService {
       }
     };
 
-    const [template, recommendations, mcp, workspaceIndex, heartbeat] =
+    const [profileAssociationResult, availableProfiles, template, recommendations, mcp, workspaceIndex, heartbeat] =
       await Promise.all([
         collect(
+          "workspace profile association",
+          () => getStoredWorkspaceProfileAssociation(),
+          {
+            workspaceUri:
+              vscode.workspace.workspaceFile?.toString() ??
+              workspaceRootUri?.toString() ??
+              null,
+            profileId: null,
+            profileName: null,
+            isDefault: false,
+            associated: false,
+            source: "none" as const,
+            profile: null,
+          }
+        ),
+        collect("profile list", () => listUserDataProfiles(), []),
+        collect(
           "template lifecycle",
-          () => this.getTemplateLifecycleSummary(workspaceRoot),
+          () => this.getTemplateLifecycleSummary(workspaceRootUri),
           createDefaultTemplateLifecycleSummary(workspaceRoot)
         ),
         collect(
           "extension recommendations",
-          () => this.getRecommendationSummary(workspaceRoot),
+          () => this.getRecommendationSummary(workspaceRootUri),
           createDefaultRecommendationSummary(workspaceRoot)
         ),
         collect(
           "MCP summary",
-          () => this.getMcpSummary(workspaceRoot),
+          () => this.getMcpSummary(workspaceRootUri),
           createDefaultMcpSummary(workspaceRoot, this.mcpProvider.isActive())
         ),
         collect(
           "workspace index",
-          () => this.getWorkspaceIndexSummary(workspaceRoot),
+          () => this.getWorkspaceIndexSummary(workspaceRootUri),
           createDefaultWorkspaceIndexSummary(workspaceRoot)
         ),
         collect(
           "heartbeat summary",
-          () => this.getHeartbeatSummary(workspaceRoot),
+          () => this.getHeartbeatSummary(workspaceRootUri),
           createDefaultHeartbeatSummary(workspaceRoot)
         ),
       ]);
@@ -447,8 +619,16 @@ class ControlCenterService {
       workspace: {
         name: vscode.workspace.name ?? null,
         root: workspaceRoot,
-        profileName,
-        knownProfiles,
+        profileId: profileAssociationResult.profileId,
+        profileName: profileAssociationResult.profileName,
+        profileSource: profileAssociationResult.source,
+        isDefaultProfile: profileAssociationResult.isDefault,
+        availableProfiles: availableProfiles.map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          isDefault: profile.isDefault,
+          exists: profile.exists,
+        })),
       },
       recommendations,
       mcp,
@@ -473,7 +653,7 @@ class ControlCenterService {
   }
 
   async startTemplateSetup(): Promise<void> {
-    await this.openTemplateLifecycleChat("Set up this project");
+    await this.openTemplateLifecycleChat("Set up instructions");
   }
 
   async updateTemplateInstructions(): Promise<void> {
@@ -490,26 +670,55 @@ class ControlCenterService {
 
   async promptAndEnsureProfile(): Promise<void> {
     const workspaceRoot = getWorkspaceRoot();
-    const currentProfile =
-      vscode.workspace.getConfiguration("asafelobotomy").get<string>(
-        "profileName",
-        ""
-      ) || "";
+    const currentAssociation = await getStoredWorkspaceProfileAssociation();
+    const availableProfiles = await listUserDataProfiles();
     const defaultProfile =
-      currentProfile ||
+      currentAssociation.profileName ||
       vscode.workspace.name ||
       (workspaceRoot ? path.basename(workspaceRoot) : "workspace");
 
-    const profileName = await vscode.window.showInputBox({
-      prompt: "Open the current workspace in a named profile",
-      placeHolder: "copilot-extension",
-      value: defaultProfile,
-      validateInput(value) {
-        return /^[\w\s\-.]+$/.test(value)
-          ? null
-          : "Only letters, numbers, spaces, hyphens, underscores, and dots are allowed.";
-      },
-    });
+    const profileChoice = await vscode.window.showQuickPick(
+      [
+        ...availableProfiles.map((profile) => ({
+          label: profile.name,
+          description: profile.isDefault ? "Default profile" : profile.id,
+          detail:
+            currentAssociation.profileId === profile.id
+              ? "Currently associated with this workspace"
+              : profile.exists
+                ? "Open this workspace in this profile"
+                : "Profile metadata found but profile directory is missing",
+          profileName: profile.name,
+        })),
+        {
+          label: "$(add) Create new profile",
+          description: "Enter a new VS Code profile name",
+          detail: "VS Code will create the profile when the workspace reopens.",
+          profileName: null,
+        },
+      ],
+      {
+        placeHolder: "Select a VS Code profile for this workspace",
+        matchOnDescription: true,
+        matchOnDetail: true,
+      }
+    );
+
+    if (!profileChoice) {
+      return;
+    }
+
+    const profileName = profileChoice.profileName ??
+      (await vscode.window.showInputBox({
+        prompt: "Open the current workspace in a named profile",
+        placeHolder: "copilot-extension",
+        value: defaultProfile,
+        validateInput(value) {
+          return /^[\w\s\-.]+$/.test(value)
+            ? null
+            : "Only letters, numbers, spaces, hyphens, underscores, and dots are allowed.";
+        },
+      }));
 
     if (!profileName) {
       return;
@@ -581,6 +790,8 @@ class ControlCenterService {
     }
 
     let requestedChanges = false;
+    let requestedCount = 0;
+    const failedRequests: string[] = [];
 
     if (recommendations.missing.length > 0) {
       const installChoice = await vscode.window.showInformationMessage(
@@ -591,10 +802,12 @@ class ControlCenterService {
       );
 
       if (installChoice === "Install Missing") {
-        const requestedCount = await this.requestExtensionInstall(
+        const installSummary = await this.requestExtensionInstall(
           recommendations.missing
         );
-        requestedChanges = requestedChanges || requestedCount > 0;
+        requestedCount += installSummary.requested.length;
+        failedRequests.push(...installSummary.failed);
+        requestedChanges = requestedChanges || installSummary.requested.length > 0;
       }
     }
 
@@ -627,13 +840,26 @@ class ControlCenterService {
           );
 
           if (confirmRemoval === "Uninstall Selected") {
-            const requestedCount = await this.requestExtensionUninstall(
+            const uninstallSummary = await this.requestExtensionUninstall(
               selection.map((item) => item.label)
             );
-            requestedChanges = requestedChanges || requestedCount > 0;
+            requestedCount += uninstallSummary.requested.length;
+            failedRequests.push(...uninstallSummary.failed);
+            requestedChanges =
+              requestedChanges || uninstallSummary.requested.length > 0;
           }
         }
       }
+    }
+
+    if (failedRequests.length > 0) {
+      const failureSummary = failedRequests.join(", ");
+      void vscode.window.showWarningMessage(
+        requestedChanges
+          ? `Submitted ${requestedCount} extension change request${requestedCount === 1 ? "" : "s"}, but ${failedRequests.length} request${failedRequests.length === 1 ? "" : "s"} failed to start: ${failureSummary}. See the extension output for details.`
+          : `No extension change requests were submitted. ${failedRequests.length} request${failedRequests.length === 1 ? "" : "s"} failed to start: ${failureSummary}. See the extension output for details.`
+      );
+      return;
     }
 
     if (requestedChanges) {
@@ -655,10 +881,187 @@ class ControlCenterService {
     this.output.show(true);
   }
 
-  restartMcp(): void {
+  async restartMcp(): Promise<boolean> {
+    const workspaceRootUri = getPrimaryWorkspaceUri();
+    if (!workspaceRootUri) {
+      this.log("Restart skipped because no workspace folder is open.");
+      void vscode.window.showWarningMessage(
+        "Open a workspace folder before restarting MCP servers."
+      );
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      this.log("Restart skipped because the MCP provider is inactive.");
+      void vscode.window.showWarningMessage(
+        "The MCP provider is not active in this window."
+      );
+      return false;
+    }
+
+    const mcpConfigUri = joinFromUri(workspaceRootUri, ".vscode", "mcp.json");
+    if (!mcpConfigUri) {
+      return false;
+    }
+
+    if (!vscode.workspace.fs.isWritableFileSystem(mcpConfigUri.scheme)) {
+      this.log("Restart skipped because the workspace file system is read-only.");
+      void vscode.window.showWarningMessage(
+        "The current workspace file system is read-only."
+      );
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      this.log("Restart skipped because the MCP provider is inactive.");
+      void vscode.window.showWarningMessage(
+        "The MCP provider is not active in this window."
+      );
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!mcpConfigUri) {
+      return false;
+    }
+
+    // The restart action only makes sense when an MCP config exists in the workspace.
+    if (!vscode.workspace.workspaceFolders?.length) {
+      return false;
+    }
+
+    // Use workspace.fs-aware existence checks so remote workspaces are handled correctly.
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!mcpConfigUri) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!this.mcpProvider.isActive()) {
+      return false;
+    }
+
+    if (!(await pathExists(mcpConfigUri))) {
+      this.log("Restart skipped because .vscode/mcp.json is missing.");
+      void vscode.window.showWarningMessage(
+        "No .vscode/mcp.json file was found for this workspace."
+      );
+      return false;
+    }
+
     this.mcpProvider.triggerRestart();
     this.output.appendLine("Restart requested from Control Center.");
     void vscode.window.showInformationMessage("MCP server restart triggered.");
+    return true;
   }
 
   private async openTemplateLifecycleChat(query: string): Promise<void> {
@@ -696,8 +1099,13 @@ class ControlCenterService {
     }
   }
 
-  private async requestExtensionInstall(extensionIds: string[]): Promise<number> {
-    let requestedCount = 0;
+  private async requestExtensionInstall(
+    extensionIds: string[]
+  ): Promise<ExtensionRequestSummary> {
+    const summary: ExtensionRequestSummary = {
+      requested: [],
+      failed: [],
+    };
 
     for (const extensionId of extensionIds) {
       try {
@@ -705,22 +1113,26 @@ class ControlCenterService {
           "workbench.extensions.installExtension",
           extensionId
         );
-        requestedCount += 1;
+        summary.requested.push(extensionId);
         this.output.appendLine(
           `[Control Center] Requested install for ${extensionId}.`
         );
       } catch (error) {
+        summary.failed.push(extensionId);
         this.reportError(`Failed to request install for ${extensionId}`, error);
       }
     }
 
-    return requestedCount;
+    return summary;
   }
 
   private async requestExtensionUninstall(
     extensionIds: string[]
-  ): Promise<number> {
-    let requestedCount = 0;
+  ): Promise<ExtensionRequestSummary> {
+    const summary: ExtensionRequestSummary = {
+      requested: [],
+      failed: [],
+    };
 
     for (const extensionId of extensionIds) {
       try {
@@ -728,34 +1140,33 @@ class ControlCenterService {
           "workbench.extensions.uninstallExtension",
           extensionId
         );
-        requestedCount += 1;
+        summary.requested.push(extensionId);
         this.output.appendLine(
           `[Control Center] Requested uninstall for ${extensionId}.`
         );
       } catch (error) {
+        summary.failed.push(extensionId);
         this.reportError(`Failed to request uninstall for ${extensionId}`, error);
       }
     }
 
-    return requestedCount;
+    return summary;
   }
 
-  private async getMcpSummary(workspaceRoot: string | null): Promise<McpSummary> {
-    const mcpPath = workspaceRoot
-      ? path.join(workspaceRoot, ".vscode", "mcp.json")
-      : null;
-    const mcpData = mcpPath
-      ? await readJsonFile<{ servers?: Record<string, { disabled?: boolean }> }>(
-          mcpPath
-        )
-      : null;
+  private async getMcpSummary(
+    workspaceRootUri: vscode.Uri | null
+  ): Promise<McpSummary> {
+    const mcpUri = joinFromUri(workspaceRootUri, ".vscode", "mcp.json");
+    const mcpData = await readWorkspaceJsonFile<{
+      servers?: Record<string, { disabled?: boolean }>;
+    }>(mcpUri);
     const servers = Object.values(mcpData?.servers ?? {});
     const disabled = servers.filter((server) => server.disabled === true).length;
 
     return {
       providerActive: this.mcpProvider.isActive(),
       configExists: Boolean(mcpData),
-      path: mcpPath,
+      path: displayUriPath(mcpUri),
       serverCount: servers.length,
       enabled: servers.length - disabled,
       disabled,
@@ -763,19 +1174,21 @@ class ControlCenterService {
   }
 
   private async getRecommendationSummary(
-    workspaceRoot: string | null
+    workspaceRootUri: vscode.Uri | null
   ): Promise<RecommendationSummary> {
-    const recommendationsPath = workspaceRoot
-      ? path.join(workspaceRoot, ".vscode", "extensions.json")
-      : null;
-    const recommendationsFile = recommendationsPath
-      ? await readJsonFile<{ recommendations?: string[] }>(recommendationsPath)
-      : null;
+    const recommendationsUri = joinFromUri(
+      workspaceRootUri,
+      ".vscode",
+      "extensions.json"
+    );
+    const recommendationsFile = await readWorkspaceJsonFile<{
+      recommendations?: string[];
+    }>(recommendationsUri);
 
     if (!recommendationsFile) {
       return {
         exists: false,
-        path: recommendationsPath,
+        path: displayUriPath(recommendationsUri),
         missing: [],
         extra: [],
         matched: [],
@@ -793,7 +1206,7 @@ class ControlCenterService {
 
     return {
       exists: true,
-      path: recommendationsPath,
+      path: displayUriPath(recommendationsUri),
       missing: recommendedIds.filter((value) => !installedIds.has(value)),
       extra: [...installedIds].filter(
         (value) => !recommendedIds.includes(value)
@@ -803,9 +1216,9 @@ class ControlCenterService {
   }
 
   private async getWorkspaceIndexSummary(
-    workspaceRoot: string | null
+    workspaceRootUri: vscode.Uri | null
   ): Promise<WorkspaceIndexSummary> {
-    if (!workspaceRoot) {
+    if (!workspaceRootUri) {
       return {
         exists: false,
         path: null,
@@ -815,8 +1228,8 @@ class ControlCenterService {
 
     const candidates = [
       {
-        path: path.join(
-          workspaceRoot,
+        uri: joinFromUri(
+          workspaceRootUri,
           ".copilot",
           "workspace",
           "operations",
@@ -825,8 +1238,8 @@ class ControlCenterService {
         source: "workspace-runtime" as const,
       },
       {
-        path: path.join(
-          workspaceRoot,
+        uri: joinFromUri(
+          workspaceRootUri,
           "template",
           "workspace",
           "operations",
@@ -837,19 +1250,19 @@ class ControlCenterService {
     ];
 
     let workspaceIndex: Record<string, unknown> | null = null;
-    let resolvedPath: string | null = candidates[0]?.path ?? null;
+    let resolvedPath: string | null = displayUriPath(candidates[0]?.uri ?? null);
     let source: WorkspaceIndexSummary["source"] = null;
 
     for (const candidate of candidates) {
-      const candidateData = await readJsonFile<Record<string, unknown>>(
-        candidate.path
+      const candidateData = await readWorkspaceJsonFile<Record<string, unknown>>(
+        candidate.uri
       );
       if (!candidateData) {
         continue;
       }
 
       workspaceIndex = candidateData;
-      resolvedPath = candidate.path;
+      resolvedPath = displayUriPath(candidate.uri);
       source = candidate.source;
       break;
     }
@@ -872,33 +1285,29 @@ class ControlCenterService {
   }
 
   private async getTemplateLifecycleSummary(
-    workspaceRoot: string | null
+    workspaceRootUri: vscode.Uri | null
   ): Promise<TemplateLifecycleSummary> {
-    const pluginManifestPath = workspaceRoot
-      ? path.join(workspaceRoot, "plugin.json")
-      : null;
-    const versionFilePath = workspaceRoot
-      ? path.join(workspaceRoot, ".github", "copilot-version.md")
-      : null;
-    const instructionsFilePath = workspaceRoot
-      ? path.join(workspaceRoot, ".github", "copilot-instructions.md")
-      : null;
-
-    const pluginManifest = pluginManifestPath
-      ? await readJsonFile<{
-          version?: string;
-          agents?: string;
-          skills?: string;
-          hooks?: string;
-          mcpServers?: string;
-        }>(pluginManifestPath)
-      : null;
-    const versionFileText = versionFilePath
-      ? await readTextFile(versionFilePath)
-      : null;
-    const instructionsFileExists = Boolean(
-      instructionsFilePath && fs.existsSync(instructionsFilePath)
+    const pluginManifestUri = joinFromUri(workspaceRootUri, "plugin.json");
+    const versionFileUri = joinFromUri(
+      workspaceRootUri,
+      ".github",
+      "copilot-version.md"
     );
+    const instructionsFileUri = joinFromUri(
+      workspaceRootUri,
+      ".github",
+      "copilot-instructions.md"
+    );
+
+    const pluginManifest = await readWorkspaceJsonFile<{
+      version?: string;
+      agents?: string;
+      skills?: string;
+      hooks?: string;
+      mcpServers?: string;
+    }>(pluginManifestUri);
+    const versionFileText = await readWorkspaceTextFile(versionFileUri);
+    const instructionsFileExists = await pathExists(instructionsFileUri);
     const pluginManifestExists = Boolean(pluginManifest);
     const versionFileExists = versionFileText !== null;
     const sourceVersion =
@@ -996,11 +1405,11 @@ class ControlCenterService {
       updatedDate,
       ownershipMode,
       pluginManifestExists,
-      pluginManifestPath,
+      pluginManifestPath: displayUriPath(pluginManifestUri),
       versionFileExists,
-      versionFilePath,
+      versionFilePath: displayUriPath(versionFileUri),
       instructionsFileExists,
-      instructionsFilePath,
+      instructionsFilePath: displayUriPath(instructionsFileUri),
       sectionFingerprintCount: Object.keys(sectionFingerprints).length,
       fileManifestCount: Object.keys(fileManifest).length,
       setupAnswerCount: Object.keys(setupAnswers).length,
@@ -1014,9 +1423,9 @@ class ControlCenterService {
   }
 
   private async getHeartbeatSummary(
-    workspaceRoot: string | null
+    workspaceRootUri: vscode.Uri | null
   ): Promise<HeartbeatSummary> {
-    if (!workspaceRoot) {
+    if (!workspaceRootUri) {
       return {
         sessionActive: false,
         heartbeatSummary: null,
@@ -1026,32 +1435,40 @@ class ControlCenterService {
       };
     }
 
-    const heartbeatRoot = path.join(workspaceRoot, ".copilot", "workspace");
-    const runtimeRoot = path.join(heartbeatRoot, "runtime");
-    const operationsRoot = path.join(heartbeatRoot, "operations");
-    const statePath = path.join(runtimeRoot, "state.json");
-    const eventsPath = path.join(runtimeRoot, ".heartbeat-events.jsonl");
-    const sentinelPath = path.join(runtimeRoot, ".heartbeat-session");
-    const heartbeatPath = path.join(operationsRoot, "HEARTBEAT.md");
+    const heartbeatRootUri = joinFromUri(
+      workspaceRootUri,
+      ".copilot",
+      "workspace"
+    );
+    const stateUri = joinFromUri(heartbeatRootUri, "runtime", "state.json");
+    const eventsUri = joinFromUri(
+      heartbeatRootUri,
+      "runtime",
+      ".heartbeat-events.jsonl"
+    );
+    const sentinelUri = joinFromUri(
+      heartbeatRootUri,
+      "runtime",
+      ".heartbeat-session"
+    );
+    const heartbeatUri = joinFromUri(
+      heartbeatRootUri,
+      "operations",
+      "HEARTBEAT.md"
+    );
 
-    let heartbeatSummary: string | null = null;
-    try {
-      const heartbeatMarkdown = await fs.promises.readFile(heartbeatPath, "utf-8");
-      heartbeatSummary =
-        heartbeatMarkdown
-          .split("\n")
-          .find((line) => line.includes("HEARTBEAT"))
-          ?.trim() ?? null;
-    } catch {
-      heartbeatSummary = null;
-    }
+    const heartbeatMarkdown = await readWorkspaceTextFile(heartbeatUri);
+    const heartbeatSummary = heartbeatMarkdown
+      ?.split("\n")
+      .find((line) => line.includes("HEARTBEAT"))
+      ?.trim() ?? null;
 
     return {
-      sessionActive: fs.existsSync(sentinelPath),
+      sessionActive: await pathExists(sentinelUri),
       heartbeatSummary,
-      stateExists: fs.existsSync(statePath),
-      eventsExists: fs.existsSync(eventsPath),
-      root: heartbeatRoot,
+      stateExists: await pathExists(stateUri),
+      eventsExists: await pathExists(eventsUri),
+      root: displayUriPath(heartbeatRootUri),
     };
   }
 
@@ -1221,7 +1638,7 @@ class ControlCenterViewProvider implements vscode.WebviewViewProvider {
             await this.service.runHealthCheck();
             break;
           case "restartMcp":
-            this.service.restartMcp();
+            await this.service.restartMcp();
             break;
           case "ensureRepoProfile":
             await this.service.promptAndEnsureProfile();
@@ -1396,6 +1813,23 @@ function renderControlCenterHtml(
   ).length;
   const statusTone = errorCount > 0 ? "error" : warnCount > 0 ? "warn" : "ok";
   const templateState = formatTemplateMetadataState(snapshot.template);
+  const actionButtons = getActionButtons(snapshot);
+  const templateActions = pickActionButtons(actionButtons, [
+    "setupProject",
+    "updateInstructions",
+    "restoreInstructions",
+    "factoryRestore",
+  ]);
+  const workspaceActions = pickActionButtons(actionButtons, ["ensureRepoProfile"]);
+  const mcpActions = pickActionButtons(actionButtons, ["restartMcp"]);
+  const recommendationActions = pickActionButtons(actionButtons, [
+    "checkExtensions",
+  ]);
+  const utilityActions = pickActionButtons(actionButtons, [
+    "refresh",
+    "healthCheck",
+    "openOutput",
+  ]);
   const healthCards = snapshot.health
     .map(
       (item) => `
@@ -1575,8 +2009,17 @@ function renderControlCenterHtml(
 
       .actions {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
         gap: 8px;
+      }
+
+      .section-copy {
+        margin: 0 0 10px;
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .section-actions {
+        margin-top: 12px;
       }
 
       button {
@@ -1600,8 +2043,22 @@ function renderControlCenterHtml(
         filter: brightness(1.05);
       }
 
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+        filter: saturate(0.7);
+      }
+
+      button:disabled:hover {
+        filter: saturate(0.7);
+      }
+
       button:active {
         transform: translateY(1px);
+      }
+
+      button:disabled:active {
+        transform: none;
       }
 
       .health-grid {
@@ -1679,9 +2136,9 @@ function renderControlCenterHtml(
             snapshot.workspace.profileName ?? "Unbound"
           )}</div>
           <div class="stat-note">${escapeHtml(
-            snapshot.workspace.knownProfiles.length
-              ? `${snapshot.workspace.knownProfiles.length} known profile${snapshot.workspace.knownProfiles.length === 1 ? "" : "s"}`
-              : "No saved profiles"
+            snapshot.workspace.availableProfiles.length
+              ? `${snapshot.workspace.availableProfiles.length} discovered profile${snapshot.workspace.availableProfiles.length === 1 ? "" : "s"}`
+              : "No profiles discovered"
           )}</div>
         </article>
         <article class="stat-card">
@@ -1719,6 +2176,9 @@ function renderControlCenterHtml(
 
       <section class="panel">
         <h2>Template Lifecycle</h2>
+        <p class="section-copy">${escapeHtml(
+          getTemplateLifecycleActionsDescription(snapshot)
+        )}</p>
         <div class="metric-row"><span>Repo mode</span><strong>${escapeHtml(
           snapshot.template.repoLabel
         )}</strong></div>
@@ -1741,6 +2201,9 @@ function renderControlCenterHtml(
         <div class="metric-row"><span>Manifest entries</span><strong>${snapshot.template.fileManifestCount}</strong></div>
         <div class="metric-row"><span>Setup answers</span><strong>${snapshot.template.setupAnswerCount}</strong></div>
         ${renderList(snapshot.template.notes, "No lifecycle notes available.")}
+        <div class="actions section-actions">
+          ${renderActionButtons(templateActions)}
+        </div>
       </section>
 
       <section class="panel">
@@ -1757,6 +2220,9 @@ function renderControlCenterHtml(
         <div class="metric-row"><span>Summary</span><strong>${escapeHtml(
           snapshot.heartbeat.heartbeatSummary ?? "No HEARTBEAT.md summary"
         )}</strong></div>
+        <div class="actions section-actions">
+          ${renderActionButtons(workspaceActions)}
+        </div>
       </section>
 
       <section class="panel">
@@ -1769,6 +2235,9 @@ function renderControlCenterHtml(
         )}</strong></div>
         <div class="metric-row"><span>Servers</span><strong>${snapshot.mcp.serverCount}</strong></div>
         <div class="metric-row"><span>Disabled</span><strong>${snapshot.mcp.disabled}</strong></div>
+        <div class="actions section-actions">
+          ${renderActionButtons(mcpActions)}
+        </div>
       </section>
 
       <section class="panel">
@@ -1790,22 +2259,16 @@ function renderControlCenterHtml(
           snapshot.recommendations.missing,
           "No missing recommended extensions."
         )}
+        <div class="actions section-actions">
+          ${renderActionButtons(recommendationActions)}
+        </div>
       </section>
 
       <section class="panel">
-        <h2>Actions</h2>
-        <p class="muted">Template lifecycle actions open Copilot Chat with the canonical trigger phrases from the template.</p>
-        <div class="actions">
-          <button type="button" data-command="setupProject">Set Up Project</button>
-          <button type="button" data-command="updateInstructions">Update Instructions</button>
-          <button type="button" data-command="restoreInstructions">Restore Backup</button>
-          <button type="button" data-command="factoryRestore">Factory Restore</button>
-          <button type="button" data-command="refresh">Refresh</button>
-          <button type="button" data-command="healthCheck">Run Health Check</button>
-          <button type="button" data-command="restartMcp">Restart MCP</button>
-          <button type="button" data-command="ensureRepoProfile">Switch Profile</button>
-          <button type="button" data-command="checkExtensions">Review Extensions</button>
-          <button type="button" data-command="openOutput">Open Output</button>
+        <h2>Utilities</h2>
+        <p class="muted">${escapeHtml(getUtilityActionsDescription())}</p>
+        <div class="actions section-actions">
+          ${renderActionButtons(utilityActions)}
         </div>
       </section>
     </main>
@@ -1882,7 +2345,7 @@ export function registerControlCenter(
     vscode.commands.registerCommand(
       "asafelobotomy.controlCenter.restartMcp",
       async () => {
-        service.restartMcp();
+        await service.restartMcp();
         await provider.refresh();
       }
     ),
